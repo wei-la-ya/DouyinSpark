@@ -500,17 +500,17 @@ class QrLoginSession:
             elif status in ("confirmed", "confirm", "success", "complete"):
                 if not self.jar.has("sessionid"):
                     raise RuntimeError("已确认但未拿到 sessionid，请重试")
-                # 总是调 /passport/account/info/v2/ 拿最新昵称（user_data 里的字段可能过时）
+                # 调 /aweme/v1/web/user/profile/self/ 拿当前最新昵称（不是登录会话里的旧缓存）
+                # 注：/passport/account/info/v2/ 返回的是登录会话建立那一刻的快照，
+                # 用户改过昵称后接口仍返回旧值，必须用 profile/self 接口
                 name = ""
                 try:
-                    info = await self.call("/passport/account/info/v2/", None, None)
-                    info_data = (info or {}).get("data") or {}
-                    if info_data.get("screen_name"):
-                        name = str(info_data["screen_name"])
-                    elif info_data.get("name"):
-                        name = str(info_data["name"])
+                    info = await self.call("/aweme/v1/web/user/profile/self/", None, None)
+                    user_data = (info or {}).get("user") or {}
+                    if user_data.get("nickname"):
+                        name = str(user_data["nickname"])
                 except (httpx.HTTPError, RuntimeError):
-                    # info API 失败时回落到 user_data
+                    # fallback：回落到 user_data
                     ud = d.get("user_data") or {}
                     name = str(ud.get("screen_name") or ud.get("name") or "")
                 self.cookies = [
