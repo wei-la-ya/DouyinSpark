@@ -500,24 +500,24 @@ class QrLoginSession:
             elif status in ("confirmed", "confirm", "success", "complete"):
                 if not self.jar.has("sessionid"):
                     raise RuntimeError("已确认但未拿到 sessionid，请重试")
-                # 尝试从 /passport/account/info/v2/ 补全昵称（user_data 偶尔不带）
-                ud = d.get("user_data") or {}
-                if not ud.get("screen_name") and not ud.get("name"):
-                    try:
-                        info = await self.call("/passport/account/info/v2/", None, None)
-                        info_data = (info or {}).get("data") or {}
-                        if info_data.get("screen_name"):
-                            ud["screen_name"] = info_data["screen_name"]
-                        elif info_data.get("name"):
-                            ud["name"] = info_data["name"]
-                    except (httpx.HTTPError, RuntimeError):
-                        # 昵称补全失败不阻断
-                        pass
+                # 总是调 /passport/account/info/v2/ 拿最新昵称（user_data 里的字段可能过时）
+                name = ""
+                try:
+                    info = await self.call("/passport/account/info/v2/", None, None)
+                    info_data = (info or {}).get("data") or {}
+                    if info_data.get("screen_name"):
+                        name = str(info_data["screen_name"])
+                    elif info_data.get("name"):
+                        name = str(info_data["name"])
+                except (httpx.HTTPError, RuntimeError):
+                    # info API 失败时回落到 user_data
+                    ud = d.get("user_data") or {}
+                    name = str(ud.get("screen_name") or ud.get("name") or "")
                 self.cookies = [
-                    {"name": name, "value": value, "domain": ".douyin.com", "path": "/"}
-                    for name, value in self.jar.store.items()
+                    {"name": n, "value": value, "domain": ".douyin.com", "path": "/"}
+                    for n, value in self.jar.store.items()
                 ]
-                self.screen_name = str(ud.get("screen_name") or ud.get("name") or "")
+                self.screen_name = name
                 self.status = "success"
                 self.message = "登录成功"
                 return
