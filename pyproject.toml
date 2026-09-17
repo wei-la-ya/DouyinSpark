@@ -1,0 +1,10 @@
+[project]
+name = "douyin-spark"
+version = "1.0.0"
+description = "抖音续火（API 版）：按用户 ID 给好友发消息续火花，GsCore 插件"
+dependencies = [
+    "httpx>=0.24.0",
+    "aiofiles>=23.0.0",
+    "aiosmtplib>=3.0.0",
+    "websockets>=12.0",
+]

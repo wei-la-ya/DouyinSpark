@@ -1,0 +1,18 @@
+# Python 缓存
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 运行时数据与敏感配置（绝不上传）
+data/
+config.json
+*.db
+*.sqlite
+.env
+
+# 测试文件（本地保留，不上传）
+tests/
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
