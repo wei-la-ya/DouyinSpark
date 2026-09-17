@@ -26,7 +26,8 @@ from urllib.parse import quote
 
 import httpx
 
-from .abogus import sign_abogus
+from .abogus import sign_abogus  # noqa: F401  # 兼容外部可能的依赖
+from .abogus_imdesktop import sign_a_bogus
 
 HOST = "https://imdesktop.douyin.com"
 AID = "339757"
@@ -279,13 +280,18 @@ class QrLoginSession:
         body: Optional[dict[str, str]] = None,
         lite: bool = False,
     ) -> dict[str, Any]:
-        """发一个已签名的 passport 请求，返回解析后的 JSON。"""
+        """发一个已签名的 passport 请求，返回解析后的 JSON。
+
+        a_bogus 用 imdesktop 端 dhzx 变体（与 web 端 cus 变体算法不同）：
+        web 端的 sign_abogus 用于 douyin.com；imdesktop passport 必须用 dhzx。
+        """
         query = {**(self._lite_base() if lite else self._normal_base()), **(query_extra or {})}
         if not lite:
             query.update(sign_params(query, body))
         query["msToken"] = _ms_token(128)
         query_str = encode_kv(query)
-        a_bogus = sign_abogus(query_str, UA)
+        body_str = encode_kv(body) if body else ""
+        a_bogus = sign_a_bogus(query_str, body_str, UA, int(time.time() * 1000))
         url = f"{HOST}{path}?{query_str}&a_bogus={_encode_uri_component(a_bogus)}"
 
         headers = {
@@ -309,7 +315,7 @@ class QrLoginSession:
 
         http = self._http()
         if body:
-            response = await http.post(url, headers=headers, content=encode_kv(body))
+            response = await http.post(url, headers=headers, content=body_str)
         else:
             response = await http.get(url, headers=headers)
         self.jar.update(response.headers.get_list("set-cookie"))
