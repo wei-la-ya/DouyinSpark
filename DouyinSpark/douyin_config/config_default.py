@@ -60,14 +60,14 @@ CONFIG_DEFAULT: Dict[str, GSC] = {
         data="",
         secret=True,
     ),
-    "ExternalSetupUrl": GsStrConfig(
-        title="外置配置服务地址",
-        desc="留空 = 用 Core 内嵌配置页；填写后 dy添加账号/添加好友/修改账号 走外置服务（如 https://dyspark-login.example.com），通过 WS 回调拿结果",
-        data="",
+    "UseExternalSetup": GsBoolConfig(
+        title="使用外置配置服务",
+        desc="开启后 dy添加账号/添加好友/修改账号 走外置服务（HTTP start + WS 回调）；关闭则使用 Core 内嵌配置页",
+        data=False,
     ),
-    "SetupBaseUrl": GsStrConfig(
-        title="网页配置服务对外地址",
-        desc="内嵌模式下生成配置链接用的对外地址。有公网域名就填完整地址（如 https://spark.example.com），留空则默认取 Core 的 HOST/PORT",
+    "SetupServiceUrl": GsStrConfig(
+        title="配置服务地址",
+        desc="外置模式：填外置服务地址（如 https://dyspark-login.example.com，必填）。内置模式：填网页对外地址（如 https://spark.example.com 或内网穿透域名），留空则取 Core 的 HOST/PORT",
         data="",
     ),
     "DividerSmtp": GsDivider(title="SMTP 邮件通知", desc=""),

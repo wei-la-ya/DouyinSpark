@@ -67,7 +67,7 @@ async def create_setup_link(user_id: str, bot_id: str, account_id: Optional[int]
     """创建一次性配置链接，返回 (url, 有效分钟数)。
 
     地址三级回落（参考 NTEUID 设计）：
-    配置「网页配置服务对外地址」 > Core 的 HOST/PORT > HOST 为局域网时自动探测公网 IP。
+    配置「配置服务地址」 > Core 的 HOST/PORT > HOST 为局域网时自动探测公网 IP。
     """
     token = secrets.token_hex(32)
     setup_sessions[token] = {
@@ -76,7 +76,7 @@ async def create_setup_link(user_id: str, bot_id: str, account_id: Optional[int]
         "account_id": account_id,
         "expires_at": time.time() + LINK_EXPIRES_MINUTES * 60,
     }
-    base = dy_config.get_config("SetupBaseUrl").data.strip().rstrip("/")
+    base = dy_config.get_config("SetupServiceUrl").data.strip().rstrip("/")
     if base:
         if not base.startswith(("http://", "https://")):
             base = f"https://{base}"

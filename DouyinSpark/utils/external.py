@@ -26,8 +26,10 @@ START_TIMEOUT_S = 10.0
 
 
 def external_base_url() -> str:
-    """外置配置服务地址；空串表示未启用"""
-    raw = dy_config.get_config("ExternalSetupUrl").data.strip().rstrip("/")
+    """外置模式开启时返回外置服务地址；未开启或地址为空返回空串"""
+    if not dy_config.get_config("UseExternalSetup").data:
+        return ""
+    raw = dy_config.get_config("SetupServiceUrl").data.strip().rstrip("/")
     if raw and not raw.startswith(("http://", "https://")):
         raw = f"https://{raw}"
     return raw
@@ -42,6 +44,9 @@ async def external_setup_flow(
 ) -> None:
     """外置模式配置流程：start -> 发链接 -> WS 监听 -> 写库 -> 回复结果"""
     base = external_base_url()
+    if not base:
+        await bot.send("已开启外置配置服务但未填「配置服务地址」，请先在 Web 控制台配置。")
+        return
     auth = f"{ev.user_id}-{ev.bot_id}-{(account_id or 0)}"
 
     # 编辑模式：把现有账号数据带给外置服务做页面初始值
