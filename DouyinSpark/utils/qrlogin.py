@@ -443,10 +443,13 @@ class QrLoginSession:
                     )
                     if elapsed > 90:
                         raise RuntimeError(
-                            "抖音持续限流（90 秒未缓解），扫码获取 Cookie 暂时不可用。\n"
-                            "• 等 30 分钟后再重试扫码；\n"
-                            "• 或直接在配置页下方用「手机号 + 短信验证码」登录作为备用；\n"
-                            "• 有干净代理可挂上后再发起登录"
+                            "抖音持续限流（90 秒未缓解），扫码与手机号登录均不可用。\n"
+                            "本服务使用合成指纹，抖音把同一指纹下的所有登录方式都限流了，\n"
+                            "但同一 IP 下真实浏览器不受影响（指纹不是机器人）。\n"
+                            "请用真实浏览器打开 douyin.com 登录 → 用 Cookie-Editor 导出\n"
+                            "Cookie JSON → 粘到本页「Cookie JSON」文本框提交。\n"
+                            "（Cookie-Editor 用法：浏览器装插件 → 打开 douyin.com →\n"
+                            "插件里点 Export → 选 Header format 复制 JSON）"
                         )
                     poll_ms = min(poll_ms * 2, 15000)
                     await asyncio.sleep(poll_ms / 1000)
@@ -612,6 +615,15 @@ class SmsLoginSession(QrLoginSession):
         )
         if (resp or {}).get("message") != "success":
             desc = (resp or {}).get("data", {}).get("description") or (resp or {}).get("message") or "未知错误"
+            err_code = int(((resp or {}).get("data") or {}).get("error_code") or 0)
+            # 限流（error_code=7 或文案含频繁）：本服务合成指纹被风控时手机号也会一并限流
+            if err_code == 7 or re.search(r"太频繁|频繁操作|操作频繁|访问太频繁", desc):
+                raise RuntimeError(
+                    f"发送验证码失败：{desc}\n"
+                    "本服务使用合成指纹，扫码与手机号会同时被限流。\n"
+                    "请改用真实浏览器登录 douyin.com → Cookie-Editor 导出 Cookie JSON "
+                    "→ 粘到配置页「Cookie JSON」文本框。"
+                )
             raise RuntimeError(f"发送验证码失败：{desc}")
         self.mobile_masked = str((resp.get("data") or {}).get("mobile") or mobile)
         self.status = "sms_sent"
@@ -638,6 +650,14 @@ class SmsLoginSession(QrLoginSession):
         )
         if (resp or {}).get("message") != "success":
             desc = (resp or {}).get("data", {}).get("description") or (resp or {}).get("message") or "未知错误"
+            err_code = int(((resp or {}).get("data") or {}).get("error_code") or 0)
+            if err_code == 7 or re.search(r"太频繁|频繁操作|操作频繁|访问太频繁", desc):
+                raise RuntimeError(
+                    f"验证码登录失败：{desc}\n"
+                    "本服务使用合成指纹，扫码与手机号会同时被限流。\n"
+                    "请改用真实浏览器登录 douyin.com → Cookie-Editor 导出 Cookie JSON "
+                    "→ 粘到配置页「Cookie JSON」文本框。"
+                )
             raise RuntimeError(f"验证码登录失败：{desc}")
         if not self.jar.has("sessionid"):
             raise RuntimeError("登录成功但未拿到 sessionid")

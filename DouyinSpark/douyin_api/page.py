@@ -74,7 +74,7 @@ _SETUP_PAGE_HTML = """<!doctype html>
         </div>
       </div>
       <div class="scan">
-        <span class="hint">扫码不成功？也可以用绑定的手机号短信验证码登录：</span>
+        <span class="hint">手机号登录也限流时，请用真实浏览器登录 douyin.com → Cookie-Editor 导出 Cookie JSON → 粘到下方文本框。</span>
         <div class="scan-actions">
           <input id="smsMobile" inputmode="tel" autocomplete="tel" placeholder="手机号（登录抖音的）" style="max-width:220px">
           <button id="smsSend" type="button">发送验证码</button>
