@@ -62,12 +62,22 @@ async def spark(bot: Bot, ev: Event) -> None:
 
 @sv.on_prefix("绑定邮箱")
 async def bind_email(bot: Bot, ev: Event) -> None:
+    """绑定邮箱（群聊私聊均可；群聊回复打码保护隐私）"""
     email = ev.text.strip()
     if not email or "@" not in email or "." not in email.split("@")[-1]:
         return await bot.send("邮箱格式不正确，用法：dy绑定邮箱 12345@qq.com")
     pref = await DyUserPref.get_pref(ev.user_id, ev.bot_id)
     await DyUserPref.save_pref(ev.user_id, ev.bot_id, email, pref.success_email_enabled)
-    await bot.send(f"已绑定邮箱：{email}" + chr(10) + "私聊发送链接失败时会发送到这个邮箱；也可用于续火失败邮件通知。")
+    if ev.group_id:
+        # 群聊：打码显示，保护邮箱隐私
+        local, _, domain = email.partition("@")
+        masked = (local[:2] + "***" + local[-1:]) if len(local) > 3 else local[:1] + "***"
+        await bot.send(
+            f"已绑定邮箱：{masked}@{domain}" + chr(10) + "私聊发送链接失败时会发送到这个邮箱。",
+            at_sender=True,
+        )
+    else:
+        await bot.send(f"已绑定邮箱：{email}" + chr(10) + "私聊发送链接失败时会发送到这个邮箱；也可用于续火失败邮件通知。")
 
 
 @sv.on_fullmatch("添加账号")
