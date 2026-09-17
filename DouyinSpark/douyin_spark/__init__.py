@@ -315,7 +315,17 @@ async def daily_spark_job() -> None:
         summary.append("失败明细：")
         summary.extend(f"- [{f['user_id']}] {f['account_name']}：{f['message']}" for f in result["failures"])
     await send_msg_to_master("\n".join(summary))
-    logger.info(f"[DouyinSpark] 定时续火完成，发送 {result['sent']} 条")
+    # 落地诊断：把 sent / failures / skipped 打到日志，下次续火无消息时据此排查
+    skip_total = sum(len(s.get("skipped", [])) for s in result["successes"])
+    logger.info(
+        f"[DouyinSpark] 定时续火完成：发送 {result['sent']} 条 | "
+        f"跳过 {skip_total} 个 | 失败账号 {len(result['failures'])} 个"
+    )
+    for f in result["failures"]:
+        logger.warning(f"[DouyinSpark] 失败账号 [{f['user_id']}] {f['account_name']}: {f['message']}")
+    for s in result["successes"]:
+        if s.get("skipped"):
+            logger.info(f"[DouyinSpark] 跳过目标 [{s['account_name']}]: {', '.join(s['skipped'])}")
 
 
 def _register_spark_job() -> None:
