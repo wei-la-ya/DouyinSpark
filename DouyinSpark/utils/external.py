@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 from typing import Any, Dict, Optional
 
 import httpx
@@ -47,7 +48,8 @@ async def external_setup_flow(
     if not base:
         await bot.send("已开启外置配置服务但未填「配置服务地址」，请先在 Web 控制台配置。")
         return
-    auth = f"{ev.user_id}-{ev.bot_id}-{(account_id or 0)}"
+    # 随机会话标识（user_id/bot_id/account_id 已在 start 请求体里，链接不暴露用户 ID）
+    auth = secrets.token_hex(16)
 
     # 编辑模式：把现有账号数据带给外置服务做页面初始值
     initial: Dict[str, Any] = {}
