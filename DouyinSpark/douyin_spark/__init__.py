@@ -82,7 +82,10 @@ async def bind_email(bot: Bot, ev: Event) -> None:
 
 @sv.on_fullmatch("添加账号")
 async def add_account(bot: Bot, ev: Event) -> None:
+    # 同时订阅「抖音续火结果」与「主人用户」：前者单用户接收自己账号结果，
+    # 后者让 send_msg_to_master 把聚合汇总也送达（不订阅主人用户 → 无人收到汇总）
     await gs_subscribe.add_subscribe("session", "抖音续火结果", ev)
+    await gs_subscribe.add_subscribe("session", "主人用户", ev)
     if external_base_url():
         return await external_setup_flow(bot, ev, action_text="添加账号")
     url, minutes = await create_setup_link(ev.user_id, ev.bot_id)
