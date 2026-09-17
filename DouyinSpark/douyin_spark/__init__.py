@@ -312,7 +312,7 @@ async def daily_spark_job() -> None:
         summary.append("失败明细：")
         summary.extend(f"- [{f['user_id']}] {f['account_name']}：{f['message']}" for f in result["failures"])
     await send_msg_to_master("\n".join(summary))
-    logger.mark(f"[DouyinSpark] 定时续火完成，发送 {result['sent']} 条")
+    logger.info(f"[DouyinSpark] 定时续火完成，发送 {result['sent']} 条")
 
 
 def _register_spark_job() -> None:
