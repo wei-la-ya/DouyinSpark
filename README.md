@@ -46,7 +46,7 @@ pip install httpx aiofiles aiosmtplib   # 或 pdm/uv 同步 pyproject.toml
 
 Core 不在公网时，可把配置网页部署到独立服务器，插件通过 HTTP start + WebSocket listen 回调拿结果（无密钥）：
 
-1. 部署 `external/`（见 external/README.md）
+1. 部署独立服务 [douyin-spark-login](https://github.com/wei-la-ya/douyin-spark-login)（clone 后 `pip install -r requirements.txt && uvicorn main:app` 即可运行）
 2. Web 控制台 → DouyinSpark 配置 → 填「外置配置服务地址」
 3. `dy添加账号` / `dy添加好友` / `dy修改账号` 自动走外置流程
 
