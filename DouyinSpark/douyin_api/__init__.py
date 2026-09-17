@@ -128,10 +128,9 @@ async def setup_page(token: str) -> HTMLResponse:
                 {"secUid": t.sec_uid, "nickname": t.nickname, "uniqueId": t.unique_id, "avatar": t.avatar}
                 for t in targets
             ],
-            "cookieRequired": False,
         }
     else:
-        initial = {"name": "", "messageTemplate": "", "targets": [], "cookieRequired": True}
+        initial = {"name": "", "messageTemplate": "", "targets": []}
     pref = await DyUserPref.get_pref(session["user_id"], session["bot_id"])
     initial["email"] = pref.email
     initial["successEmailEnabled"] = pref.success_email_enabled
@@ -152,16 +151,38 @@ def _render_setup_page(token: str, initial: Dict[str, Any], editing: bool) -> st
     page = page.replace("__TOKEN__", token)
     page = page.replace("__DATA__", data)
     page = page.replace("__PREFIX__", PAGE_PREFIX)
-    page = page.replace("__COOKIE_REQUIRED__", "" if editing else "required")
-    page = page.replace(
-        "__COOKIE_PLACEHOLDER__",
-        "留空则保留当前 Cookie；需要更新时粘贴或选择 .txt 文件。" if editing else "粘贴 Cookie-Editor 导出的 JSON 数组，或先选择 .txt 文件。",
-    )
     page = page.replace("__SUBMIT_LABEL__", "保存修改" if editing else "添加账号")
     return page
 
 
 # ===================== 扫码登录（纯 API） =====================
+
+
+async def _persist_login_to_db(token: str, session_obj: Any) -> None:
+    """登录成功后立即入库 Cookie + 账号名。
+
+    幂等：同一会话只入库一次；第二次调用跳过。新增场景（QR / SMS）调用此函数即可，
+    返回时 name / uid 已在数据库，account_id 写入 session，前端不再需要手动提交 Cookie。
+    """
+    setup_session = _get_session(token)
+    if setup_session is None or session_obj.cookies is None:
+        return
+    # 已入库过（编辑场景或重复轮询），跳过
+    if setup_session.get("account_id") is not None:
+        return
+    api_name = (session_obj.screen_name or "").strip() or "未命名抖音账号"
+    account = await DyAccount.add_account(
+        setup_session["user_id"],
+        setup_session["bot_id"],
+        api_name[:40],
+        json.dumps(session_obj.cookies, ensure_ascii=False),
+        "",
+    )
+    setup_session["account_id"] = account.id
+    logger.info(
+        f"[DouyinSpark] 登录成功已入库 token={token[:8]}... account_id={account.id} name={api_name!r}"
+    )
+
 
 @app.post(PAGE_PREFIX + "/api/scan/start/{token}", include_in_schema=False)
 async def scan_start(token: str) -> JSONResponse:
@@ -218,7 +239,14 @@ async def scan_status(token: str) -> JSONResponse:
         scan_sessions.pop(token, None)
         return _ok(status="error", message=message)
     if scan.status == "success":
-        return _ok(status="success", cookies=scan.cookies)
+        await _persist_login_to_db(token, scan)
+        setup_session = _get_session(token) or {}
+        return _ok(
+            status="success",
+            name=scan.screen_name or "",
+            accountId=setup_session.get("account_id"),
+            message="登录成功，Cookie 已自动入库。请填写下方消息模板/邮箱/好友后保存。",
+        )
     if scan.status == "sms":
         return _ok(status="sms", message=scan.message or "请输入短信验证码。")
     if scan.status == "scanned":
@@ -282,8 +310,15 @@ async def sms_submit(token: str, request: Request) -> JSONResponse:
     code = str(body.get("code", "")).strip()
     try:
         await session.submit_code(code)
-        logger.info(f"[DouyinSpark] 短信登录成功")
-        return _ok(status="success", cookies=session.cookies, message="短信登录成功，Cookie 已填入下方文本框，请继续提交。")
+        await _persist_login_to_db(token, session)
+        setup_session = _get_session(token) or {}
+        logger.info(f"[DouyinSpark] 短信登录成功并入库")
+        return _ok(
+            status="success",
+            name=session.screen_name or "",
+            accountId=setup_session.get("account_id"),
+            message="短信登录成功，Cookie 已自动入库。请填写下方消息模板/邮箱/好友后保存。",
+        )
     except Exception as e:
         return _fail(str(e))
 
@@ -291,29 +326,22 @@ async def sms_submit(token: str, request: Request) -> JSONResponse:
 # ===================== 会话列表 =====================
 
 @app.post(PAGE_PREFIX + "/api/conversations/{token}", include_in_schema=False)
-async def conversations(token: str, request: Request) -> JSONResponse:
+async def conversations(token: str) -> JSONResponse:
     session = _get_session(token)
     if not session:
         return _fail("链接无效或已过期，请重新发送命令。", 404)
+    if session.get("account_id") is None:
+        return _fail("请先完成扫码或短信登录，再拉取会话列表")
     from ..utils.conversations import list_conversations
 
-    body = await request.json()
-    cookie_text = str(body.get("cookieText", "")).strip()
-    cookies = None
-    if cookie_text:
-        try:
-            cookies = json.loads(cookie_text)
-            if not isinstance(cookies, list):
-                raise ValueError
-        except ValueError:
-            return _fail("Cookie JSON 格式不正确")
-    elif session["account_id"] is not None:
-        accounts = await DyAccount.list_accounts(session["user_id"], session["bot_id"])
-        account = next((a for a in accounts if a.id == session["account_id"]), None)
-        if account:
-            cookies = json.loads(account.cookies)
-    if not cookies:
-        return _fail("请先粘贴 Cookie JSON 或完成扫码登录，再拉取会话列表")
+    accounts = await DyAccount.list_accounts(session["user_id"], session["bot_id"])
+    account = next((a for a in accounts if a.id == session["account_id"]), None)
+    if account is None:
+        return _fail("账号不存在")
+    try:
+        cookies = json.loads(account.cookies)
+    except json.JSONDecodeError:
+        return _fail("账号 Cookie 数据损坏，请重新登录")
     try:
         people = await list_conversations(
             cookies,
@@ -345,11 +373,19 @@ _SEC_UID_RE = re.compile(r"^MS4w[\w-]{10,}$")
 
 @app.post(PAGE_PREFIX + "/api/setup/{token}", include_in_schema=False)
 async def save_setup(token: str, request: Request) -> JSONResponse:
+    """保存配置（账号名 / 消息模板 / 续火目标 / 邮箱）。
+
+    新流程：Cookie 已在 QR/SMS 登录成功时自动入库，account_id 已写到 session。
+    本端点不再接受 cookieText，只更新非 cookie 字段。account_id 必须已存在
+    （新账号来自 QR/SMS 成功，编辑账号来自初始会话）。
+    """
     session = _get_session(token)
     if not session:
         return _fail("链接无效或已过期，请重新发送命令。", 404)
+    if session.get("account_id") is None:
+        return _fail("请先完成扫码或短信登录，再填写配置")
     body = await request.json()
-    editing = session["account_id"] is not None
+    editing = True  # account_id 已存在（无论来自 QR 入库还是编辑会话）
 
     name = str(body.get("name", "")).strip()
     if not name or len(name) > 40:
@@ -357,20 +393,6 @@ async def save_setup(token: str, request: Request) -> JSONResponse:
     accounts = await DyAccount.list_accounts(session["user_id"], session["bot_id"])
     if any(a.name == name and a.id != session["account_id"] for a in accounts):
         return _fail(f"已存在名为“{name}”的账号")
-
-    cookie_text = str(body.get("cookieText", "")).strip()
-    cookies: Optional[list] = None
-    if cookie_text:
-        try:
-            cookies = json.loads(cookie_text)
-            if not isinstance(cookies, list) or not all(isinstance(c, dict) and c.get("name") for c in cookies):
-                raise ValueError
-        except ValueError:
-            return _fail("Cookie JSON 格式不正确，应为 Cookie-Editor 导出的数组")
-        if not any(c.get("name") == "sessionid" for c in cookies):
-            return _fail("Cookie 中缺少 sessionid，请导出完整 Cookie")
-    elif not editing:
-        return _fail("请粘贴 Cookie JSON 或先扫码登录")
 
     message_template = str(body.get("messageTemplate", "")).strip()
     try:
@@ -397,23 +419,16 @@ async def save_setup(token: str, request: Request) -> JSONResponse:
         ]
 
     try:
-        if editing:
-            account = next((a for a in accounts if a.id == session["account_id"]), None)
-            if account is None:
-                return _fail("账号不存在，请重新发送修改命令")
-            await DyAccount.update_account(
-                session["account_id"], session["user_id"], name,
-                json.dumps(cookies, ensure_ascii=False) if cookies else account.cookies,
-                message_template,
-            )
-            account_id = session["account_id"]
-        else:
-            assert cookies is not None
-            account = await DyAccount.add_account(
-                session["user_id"], session["bot_id"], name,
-                json.dumps(cookies, ensure_ascii=False), message_template,
-            )
-            account_id = account.id
+        account = next((a for a in accounts if a.id == session["account_id"]), None)
+        if account is None:
+            return _fail("账号不存在，请重新发送修改命令")
+        # 只更新 name + message_template，cookies 保持登录时入库的版本不动
+        await DyAccount.update_account(
+            session["account_id"], session["user_id"], name,
+            account.cookies,  # 保留原 cookie
+            message_template,
+        )
+        account_id = session["account_id"]
         target_note = ""
         if targets is not None:
             count = await DyTarget.replace_targets(account_id, targets)
@@ -432,5 +447,5 @@ async def save_setup(token: str, request: Request) -> JSONResponse:
     if old_scan is not None:
         old_scan.cancel()
         await old_scan.aclose()
-    logger.info(f"[DouyinSpark] 用户 {session['user_id']} {'更新' if editing else '添加'}账号「{name}」{target_note}")
-    return _ok(message=f"账号已{'更新' if editing else '添加'}{target_note}。现在可以关闭此页面。")
+    logger.info(f"[DouyinSpark] 用户 {session['user_id']} 配置账号「{name}」{target_note}")
+    return _ok(message=f"账号已配置{target_note}。现在可以关闭此页面。")

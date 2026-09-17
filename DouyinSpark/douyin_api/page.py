@@ -60,21 +60,20 @@ _SETUP_PAGE_HTML = """<!doctype html>
       </div>
       <label>失败通知邮箱<input id="email" type="email" placeholder="留空则不发送失败邮件"></label>
       <label class="check"><input id="successEmailEnabled" type="checkbox">续火成功时发送邮件通知</label>
-      <label>Cookie 文本文件<input id="cookieFile" type="file" accept=".txt,text/plain"><span class="hint">选择后会读取到下方文本框，不会上传文件本身。</span></label>
       <div class="scan">
         <div class="scan-actions">
           <button id="scanLogin" type="button">扫码获取 Cookie</button>
           <button id="scanRefresh" type="button" disabled>刷新二维码</button>
         </div>
         <img id="scanQr" class="qr" alt="抖音登录二维码">
-        <span id="scanStatus" class="hint">也可以直接粘贴 Cookie JSON 或选择 .txt 文件。</span>
+        <span id="scanStatus" class="hint">扫码成功后 Cookie 会自动入库，账号名称自动填入下方。</span>
         <div id="smsVerify" class="sms">
           <input id="smsCode" inputmode="numeric" autocomplete="one-time-code" placeholder="输入短信验证码">
           <button id="smsSubmit" type="button">提交验证码</button>
         </div>
       </div>
       <div class="scan">
-        <span class="hint">手机号登录也限流时，请用真实浏览器登录 douyin.com → Cookie-Editor 导出 Cookie JSON → 粘到下方文本框。</span>
+        <span class="hint">手机号登录也限流时，请用真实浏览器登录 douyin.com → Cookie-Editor 导出 Cookie JSON 让管理员代写入库。</span>
         <div class="scan-actions">
           <input id="smsMobile" inputmode="tel" autocomplete="tel" placeholder="手机号（登录抖音的）" style="max-width:220px">
           <button id="smsSend" type="button">发送验证码</button>
@@ -85,7 +84,7 @@ _SETUP_PAGE_HTML = """<!doctype html>
         </div>
         <span id="smsStatus" class="hint"></span>
       </div>
-      <label>Cookie JSON<textarea id="cookieText" class="cookie" __COOKIE_REQUIRED__ placeholder="__COOKIE_PLACEHOLDER__"></textarea></label>
+      <p id="cookieSaved" class="hint" style="display:none;color:#087443;">✓ Cookie 已自动入库，无需再次提交。</p>
       <p id="status"></p>
       <button id="submit" type="submit">__SUBMIT_LABEL__</button>
     </form>
@@ -154,8 +153,6 @@ _SETUP_PAGE_HTML = """<!doctype html>
       try {
         const response = await fetch('__PREFIX__/api/conversations/__TOKEN__', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ cookieText: document.querySelector('#cookieText').value }),
         });
         const data = await response.json();
         if (!data.ok) throw new Error(data.message || '拉取会话列表失败');
@@ -175,14 +172,22 @@ _SETUP_PAGE_HTML = """<!doctype html>
       }
     });
 
-    document.querySelector('#cookieFile').addEventListener('change', async event => {
-      const file = event.target.files[0];
-      if (!file) return;
-      if (!/\\.txt$/i.test(file.name)) { status.textContent = '仅支持 .txt 文件。'; return; }
-      if (file.size > 1024 * 1024) { status.textContent = '文件不能超过 1 MB。'; return; }
-      document.querySelector('#cookieText').value = await file.text();
-      status.textContent = '';
-    });
+    // ===== 扫码 / 短信登录成功后的统一处理 =====
+    const cookieSaved = document.querySelector('#cookieSaved');
+    const nameInput = document.querySelector('#name');
+    function onLoginSuccess(result) {
+      clearInterval(scanTimer);
+      smsVerify.style.display = 'none';
+      cookieSaved.style.display = 'block';
+      cookieSaved.textContent = '✓ Cookie 已自动入库（account_id=' + (result.accountId || '?') + '），请填写下方消息模板/邮箱/好友后保存。';
+      // 自动从接口填账号名（仅在当前为空时覆盖，保留用户已经改过的）
+      if (result.name && !nameInput.value.trim()) nameInput.value = result.name;
+      scanStatus.textContent = result.message || '登录成功';
+      scanLogin.disabled = false;
+      scanRefresh.disabled = false;
+      scanLogin.textContent = '重新扫码';
+    }
+
     async function requestQr(endpoint, loadingText) {
       scanLogin.disabled = true;
       scanRefresh.disabled = true;
@@ -202,13 +207,7 @@ _SETUP_PAGE_HTML = """<!doctype html>
             const result = await (await fetch('__PREFIX__/api/scan/status/__TOKEN__', { cache: 'no-store' })).json();
             if (!result.ok) throw new Error(result.message || '读取扫码状态失败');
             if (result.status === 'success') {
-              clearInterval(scanTimer);
-              smsVerify.style.display = 'none';
-              document.querySelector('#cookieText').value = JSON.stringify(result.cookies, null, 2);
-              scanStatus.textContent = '扫码登录成功，Cookie 已填入下方文本框，请继续提交。';
-              scanLogin.disabled = false;
-              scanRefresh.disabled = false;
-              scanLogin.textContent = '重新扫码';
+              onLoginSuccess(result);
             } else if (result.status === 'sms') {
               smsVerify.style.display = 'grid';
               scanStatus.textContent = result.message || '请输入短信验证码。';
@@ -279,7 +278,7 @@ _SETUP_PAGE_HTML = """<!doctype html>
         const response = await fetch('__PREFIX__/api/sms/submit/__TOKEN__', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
         const data = await response.json();
         if (!data.ok) throw new Error(data.message || '登录失败');
-        if (data.cookies) document.querySelector('#cookieText').value = JSON.stringify(data.cookies, null, 2);
+        onLoginSuccess(data);
         smsStatus.textContent = data.message || '登录成功';
       } catch (error) {
         smsStatus.textContent = error.message || '登录失败';
@@ -293,12 +292,11 @@ _SETUP_PAGE_HTML = """<!doctype html>
       clearInterval(scanTimer);
       status.className = ''; status.textContent = ''; submit.disabled = true;
       const payload = Object.fromEntries(new FormData(form));
-      payload.name = document.querySelector('#name').value;
+      payload.name = nameInput.value;
       payload.messageTemplate = document.querySelector('#messageTemplate').value;
       payload.targets = [...knownTargets.values()].filter(item => item.checked).map(({ checked, ...target }) => target);
       payload.email = document.querySelector('#email').value;
       payload.successEmailEnabled = document.querySelector('#successEmailEnabled').checked;
-      payload.cookieText = document.querySelector('#cookieText').value;
       try {
         const response = await fetch('__PREFIX__/api/setup/__TOKEN__', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         const data = await response.json();
