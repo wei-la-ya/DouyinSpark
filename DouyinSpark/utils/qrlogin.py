@@ -19,6 +19,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import time
 from typing import Any, Optional
 from urllib.parse import quote
@@ -471,3 +472,90 @@ class QrLoginSession:
             )
         self.status = "waiting"
         self.message = "短信验证通过，请继续扫码确认"
+
+
+# ===================== 手机号短信验证码登录（备选方案，参考 jumpbyte-bot smslogin.go） =====================
+
+
+def format_mobile(raw: str) -> str:
+    """归一化为 '+86 <号码>'（服务端要求国家码与号码间有一个空格）"""
+    for ch in (" ", "-", "(", ")"):
+        raw = raw.replace(ch, "")
+    raw = raw.strip()
+    if not raw:
+        return ""
+    if raw.startswith("+86"):
+        return "+86 " + raw[3:]
+    if raw.startswith("+"):
+        return raw
+    if raw.startswith("86") and len(raw) > 11:
+        return "+86 " + raw[2:]
+    return "+86 " + raw
+
+
+class SmsLoginSession(QrLoginSession):
+    """手机号 + 短信验证码登录会话（无需扫码）。
+
+    status: idle -> sms_sent -> success / error
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.mobile = ""
+        self.mobile_masked = ""
+
+    async def send_code(self, mobile: str) -> None:
+        """发送短信验证码"""
+        mobile = format_mobile(mobile)
+        if not mobile:
+            raise RuntimeError("手机号为空")
+        await self.ttwid_check()
+        self.mobile = mobile
+        resp = await self.call(
+            "/passport/web/send_code/",
+            None,
+            {
+                "mix_mode": "1",
+                "mobile": xor5(mobile),
+                "type": xor5("24"),
+                "is6Digits": "1",
+                "fixed_mix_mode": "1",
+            },
+        )
+        if (resp or {}).get("message") != "success":
+            desc = (resp or {}).get("data", {}).get("description") or (resp or {}).get("message") or "未知错误"
+            raise RuntimeError(f"发送验证码失败：{desc}")
+        self.mobile_masked = str((resp.get("data") or {}).get("mobile") or mobile)
+        self.status = "sms_sent"
+        self.message = f"已向 {self.mobile_masked} 发送短信验证码"
+
+    async def submit_code(self, code: str) -> None:
+        """验证码登录；成功后 cookies 就绪"""
+        if self.status != "sms_sent" or not self.mobile:
+            raise RuntimeError("请先发送短信验证码")
+        code = code.strip()
+        if not re.fullmatch(r"\d{4,8}", code):
+            raise RuntimeError("验证码格式不正确")
+        resp = await self.call(
+            "/passport/web/sms_login/",
+            None,
+            {
+                "service": NEXT_URL,
+                "mix_mode": "1",
+                "mobile": xor5(self.mobile),
+                "code": xor5(code),
+                "fixed_mix_mode": "1",
+                "login_only": "true",
+            },
+        )
+        if (resp or {}).get("message") != "success":
+            desc = (resp or {}).get("data", {}).get("description") or (resp or {}).get("message") or "未知错误"
+            raise RuntimeError(f"验证码登录失败：{desc}")
+        if not self.jar.has("sessionid"):
+            raise RuntimeError("登录成功但未拿到 sessionid")
+        self.cookies = [
+            {"name": name, "value": value, "domain": ".douyin.com", "path": "/"}
+            for name, value in self.jar.store.items()
+        ]
+        self.status = "success"
+        self.message = "登录成功"

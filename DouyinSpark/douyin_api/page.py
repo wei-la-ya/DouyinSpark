@@ -73,6 +73,18 @@ _SETUP_PAGE_HTML = """<!doctype html>
           <button id="smsSubmit" type="button">提交验证码</button>
         </div>
       </div>
+      <div class="scan">
+        <span class="hint">扫码不成功？也可以用绑定的手机号短信验证码登录：</span>
+        <div class="scan-actions">
+          <input id="smsMobile" inputmode="tel" autocomplete="tel" placeholder="手机号（登录抖音的）" style="max-width:220px">
+          <button id="smsSend" type="button">发送验证码</button>
+        </div>
+        <div id="smsLoginRow" class="sms">
+          <input id="smsLoginCode" inputmode="numeric" autocomplete="one-time-code" placeholder="输入短信验证码">
+          <button id="smsLoginSubmit" type="button">短信登录</button>
+        </div>
+        <span id="smsStatus" class="hint"></span>
+      </div>
       <label>Cookie JSON<textarea id="cookieText" class="cookie" __COOKIE_REQUIRED__ placeholder="__COOKIE_PLACEHOLDER__"></textarea></label>
       <p id="status"></p>
       <button id="submit" type="submit">__SUBMIT_LABEL__</button>
@@ -235,6 +247,47 @@ _SETUP_PAGE_HTML = """<!doctype html>
         smsSubmit.disabled = false;
       }
     });
+    // ===== 手机号短信验证码登录 =====
+    const smsMobile = document.querySelector('#smsMobile');
+    const smsSend = document.querySelector('#smsSend');
+    const smsLoginRow = document.querySelector('#smsLoginRow');
+    const smsLoginCode = document.querySelector('#smsLoginCode');
+    const smsLoginSubmit = document.querySelector('#smsLoginSubmit');
+    const smsStatus = document.querySelector('#smsStatus');
+    smsSend.addEventListener('click', async () => {
+      const mobile = smsMobile.value.trim();
+      if (!/^\+?[\d\s-]{6,20}$/.test(mobile)) { smsStatus.textContent = '请输入正确的手机号'; return; }
+      smsSend.disabled = true;
+      smsStatus.textContent = '正在发送验证码…';
+      try {
+        const response = await fetch('__PREFIX__/api/sms/send/__TOKEN__', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mobile }) });
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.message || '发送失败');
+        smsStatus.textContent = data.message || '验证码已发送';
+        smsLoginRow.style.display = 'grid';
+      } catch (error) {
+        smsStatus.textContent = error.message || '发送失败';
+      } finally {
+        smsSend.disabled = false;
+      }
+    });
+    smsLoginSubmit.addEventListener('click', async () => {
+      const code = smsLoginCode.value.trim();
+      if (!/^\d{4,8}$/.test(code)) { smsStatus.textContent = '请输入 4 到 8 位验证码'; return; }
+      smsLoginSubmit.disabled = true;
+      try {
+        const response = await fetch('__PREFIX__/api/sms/submit/__TOKEN__', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.message || '登录失败');
+        if (data.cookies) document.querySelector('#cookieText').value = JSON.stringify(data.cookies, null, 2);
+        smsStatus.textContent = data.message || '登录成功';
+      } catch (error) {
+        smsStatus.textContent = error.message || '登录失败';
+      } finally {
+        smsLoginSubmit.disabled = false;
+      }
+    });
+
     form.addEventListener('submit', async event => {
       event.preventDefault();
       clearInterval(scanTimer);

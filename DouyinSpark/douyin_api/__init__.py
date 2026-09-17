@@ -242,6 +242,52 @@ async def scan_sms(token: str, request: Request) -> JSONResponse:
     return _ok(message="验证码已提交，请等待登录结果。")
 
 
+# ===================== 手机号短信验证码登录（扫码备选） =====================
+
+sms_sessions: Dict[str, Any] = {}
+
+
+@app.post(PAGE_PREFIX + "/api/sms/send/{token}", include_in_schema=False)
+async def sms_send(token: str, request: Request) -> JSONResponse:
+    if not _get_session(token):
+        return _fail("链接无效或已过期，请重新发送命令。", 404)
+    from ..utils.qrlogin import SmsLoginSession
+
+    body = await request.json()
+    mobile = str(body.get("mobile", "")).strip()
+    if not mobile:
+        return _fail("请输入手机号")
+    old = sms_sessions.pop(token, None)
+    if old is not None:
+        await old.aclose()
+    session = SmsLoginSession()
+    sms_sessions[token] = session
+    try:
+        await session.send_code(mobile)
+        return _ok(status=session.status, message=session.message)
+    except Exception as e:
+        sms_sessions.pop(token, None)
+        logger.warning(f"[DouyinSpark] 发送短信验证码失败: {e}")
+        return _fail(str(e))
+
+
+@app.post(PAGE_PREFIX + "/api/sms/submit/{token}", include_in_schema=False)
+async def sms_submit(token: str, request: Request) -> JSONResponse:
+    if not _get_session(token):
+        return _fail("链接无效或已过期，请重新发送命令。", 404)
+    session = sms_sessions.get(token)
+    if session is None:
+        return _fail("请先发送短信验证码")
+    body = await request.json()
+    code = str(body.get("code", "")).strip()
+    try:
+        await session.submit_code(code)
+        logger.info(f"[DouyinSpark] 短信登录成功")
+        return _ok(status="success", cookies=session.cookies, message="短信登录成功，Cookie 已填入下方文本框，请继续提交。")
+    except Exception as e:
+        return _fail(str(e))
+
+
 # ===================== 会话列表 =====================
 
 @app.post(PAGE_PREFIX + "/api/conversations/{token}", include_in_schema=False)
