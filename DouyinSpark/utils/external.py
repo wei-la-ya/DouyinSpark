@@ -178,7 +178,8 @@ async def _save_payload(ev: Event, account_id: Optional[int], payload: Dict[str,
 
 
 async def send_setup_link(bot: Bot, ev: Event, url: str, minutes: int, action_text: str) -> bool:
-    """隐私链接发送：私聊直接发；群聊主动私聊，失败时 onebot 用 QQ 邮箱兜底（其他平台待定）。
+    """隐私链接发送：私聊直接发；群聊主动私聊；私聊失败时发邮箱
+    （onebot 直接用 QQ 邮箱 user_id@qq.com，其他平台用 dy绑定邮箱 绑定的邮箱）。
 
     返回 True 表示链接已送达（任一渠道）。
     """
@@ -198,18 +199,27 @@ async def send_setup_link(bot: Bot, ev: Event, url: str, minutes: int, action_te
             raise RuntimeError("未找到订阅会话")
         await target.send(text, force_direct=True)
         await gs_subscribe.delete_subscribe("session", "抖音配置链接", ev)
-        await bot.send(f"配置链接已私聊发送给你（{minutes} 分钟内有效），请查收私聊消息。", at_sender=True)
+        await bot.send("已私聊发送网页链接，请在网页内完成操作。", at_sender=True)
         return True
     except Exception as e:
-        # 私聊失败 → 邮箱兜底：onebot 平台即 QQ，user_id@qq.com 即 QQ 邮箱；其他平台待定
+        # 私聊失败 → 邮箱兜底
         logger.warning(f"[DouyinSpark] 私聊发送配置链接失败: {e}")
+        email = ""
         if ev.bot_id == "onebot":
             email = f"{ev.user_id}@qq.com"
-            mail_text = text + chr(10) * 2 + "（此邮件由机器人自动发送，请勿回复）"
-            if await send_mail(email, "抖音续火账号配置链接", mail_text):
-                await bot.send(f"私聊发送失败，配置链接已发送到你的 QQ 邮箱 {email}，请查收。", at_sender=True)
-                return True
-            await bot.send("私聊发送失败，邮箱发送也失败了。请检查 SMTP 配置，或私聊我重新发送命令。", at_sender=True)
+        else:
+            from .database import DyUserPref
+            pref = await DyUserPref.get_pref(ev.user_id, ev.bot_id)
+            email = pref.email
+        if not email:
+            await bot.send(
+                "私聊发送失败，且未绑定接收邮箱。\n请私聊我发送 dy绑定邮箱 你的邮箱（如 dy绑定邮箱 12345@qq.com）后重试。",
+                at_sender=True,
+            )
             return False
-        await bot.send("私聊发送失败，且当前平台暂不支持邮箱兜底。请私聊我发送命令重新获取链接。", at_sender=True)
+        mail_text = text + chr(10) * 2 + "（此邮件由机器人自动发送，请勿回复）"
+        if await send_mail(email, "抖音续火账号配置链接", mail_text):
+            await bot.send("已将链接发送到你的qq邮箱内，请在网页内完成操作。", at_sender=True)
+            return True
+        await bot.send("私聊发送失败，邮箱发送也失败了。请检查 SMTP 配置，或私聊我重新发送命令。", at_sender=True)
         return False

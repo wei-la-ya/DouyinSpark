@@ -4,7 +4,7 @@ from gsuid_core.models import Event
 from gsuid_core.sv import SV
 from gsuid_core.subscribe import gs_subscribe
 
-from ..utils.database import DyAccount, DyTarget
+from ..utils.database import DyAccount, DyTarget, DyUserPref
 from ..utils.runner import run_spark
 from ..douyin_api import create_setup_link
 from ..utils.external import external_setup_flow, external_base_url, send_setup_link
@@ -23,6 +23,7 @@ dy刷新昵称 [账号名]：批量刷新目标昵称，报告改名情况。
 dy续火：执行自己全部账号。
 dy续火 账号名：仅执行自己的指定账号。
 dy续火 全部（仅主人）：执行所有用户账号。
+dy绑定邮箱 邮箱：绑定接收配置链接的邮箱（私聊发送失败时兜底，非 QQ 平台需要）。
 dy续火 帮助：查看本帮助。"""
 
 
@@ -57,6 +58,16 @@ async def spark(bot: Bot, ev: Event) -> None:
         await bot.send(f"{e}\n现在私聊我发送 dy添加账号 即可开始绑定。")
     except Exception as e:
         await bot.send(f"抖音续火失败：{e}")
+
+
+@sv.on_prefix("绑定邮箱")
+async def bind_email(bot: Bot, ev: Event) -> None:
+    email = ev.text.strip()
+    if not email or "@" not in email or "." not in email.split("@")[-1]:
+        return await bot.send("邮箱格式不正确，用法：dy绑定邮箱 12345@qq.com")
+    pref = await DyUserPref.get_pref(ev.user_id, ev.bot_id)
+    await DyUserPref.save_pref(ev.user_id, ev.bot_id, email, pref.success_email_enabled)
+    await bot.send(f"已绑定邮箱：{email}" + chr(10) + "私聊发送链接失败时会发送到这个邮箱；也可用于续火失败邮件通知。")
 
 
 @sv.on_fullmatch("添加账号")
