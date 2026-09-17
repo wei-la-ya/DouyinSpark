@@ -376,7 +376,15 @@ class QrLoginSession:
             self.error = str(error) or "扫码登录失败"
 
     async def run_loop(self) -> None:
-        """轮询扫码状态（调用前需已设置 self.token / self.expire_at）。"""
+        """轮询扫码状态（调用前需已设置 self.token / self.expire_at）。
+
+        限流策略（移植自 jumpbyte-bot / 抖音Cookie.js）：
+          - 正常 3s 一次，命中限流后指数退避 3s→6s→12s→15s（封顶）
+          - 持续限流 90 秒未缓解则放弃，提示用户挂代理或等待
+          - 多种限流描述同时识别（error_code=7 / 太频繁 / 频繁操作 / 操作频繁）
+          - 网络异常 15 次、异常响应 8 次上限避免死循环
+          - 确认状态多分支兼容（confirmed / confirm / success / complete）
+        """
         token = self.token
         expire_at = self.expire_at or time.time() * 1000 + 180000
         base_body = {
@@ -386,49 +394,129 @@ class QrLoginSession:
         extra_body: dict[str, str] = {}
         scanned = False
         mfa_done = False
+        fail_count = 0
+        rate_limit_since: float = 0.0
+        poll_ms = 3000
+        last_status = ""
 
         while time.time() * 1000 < expire_at and not self.cancelled:
             body = {**base_body, **extra_body}
             try:
                 result = await self.call("/passport/web/check_qrconnect/", None, body)
-            except httpx.HTTPError:
-                await asyncio.sleep(3)
+            except httpx.HTTPError as err:
+                fail_count += 1
+                self.message = f"扫码轮询网络异常（{fail_count}/15）：{err.__class__.__name__}"
+                if fail_count >= 15:
+                    raise RuntimeError(
+                        "检查扫码状态连续网络失败，请检查网络后重试（也可能是 IP 被风控）"
+                    )
+                await asyncio.sleep(poll_ms / 1000)
                 continue
             d = (result or {}).get("data") or {}
 
             if not mfa_done and (d.get("account_flow") == "verify" or d.get("biz_params")):
+                fail_count = 0
+                rate_limit_since = 0.0
                 await self._do_mfa(d)
                 extra_body = _pick_biz_params(d.get("biz_params") or {})
                 mfa_done = True
                 continue
 
-            if d.get("status") == "scanned":
+            status = str(d.get("status") or "")
+            if not status:
+                # 无状态响应：可能是限流（error_code=7）、WAF 拦截或协议变化
+                desc = (
+                    str((result or {}).get("message") or "")
+                    + " "
+                    + str(d.get("description") or "")
+                ).strip()[:200]
+                is_rate_limit = (
+                    int(d.get("error_code") or 0) == 7
+                    or bool(re.search(r"太频繁|频繁操作|操作频繁", desc))
+                )
+                if is_rate_limit:
+                    if not rate_limit_since:
+                        rate_limit_since = time.time()
+                    elapsed = int(time.time() - rate_limit_since)
+                    self.message = (
+                        f"命中抖音限流，将在 {poll_ms // 1000}s 后重试（已持续 {elapsed}s）"
+                    )
+                    if elapsed > 90:
+                        raise RuntimeError(
+                            "抖音持续限流（90 秒未缓解），扫码获取 Cookie 暂时不可用。\n"
+                            "• 等 30 分钟后再重试扫码；\n"
+                            "• 或直接在配置页下方用「手机号 + 短信验证码」登录作为备用；\n"
+                            "• 有干净代理可挂上后再发起登录"
+                        )
+                    poll_ms = min(poll_ms * 2, 15000)
+                    await asyncio.sleep(poll_ms / 1000)
+                    continue
+                # 非限流的异常响应：累加失败计数
+                rate_limit_since = 0.0
+                fail_count += 1
+                self.message = f"扫码状态异常（{fail_count}/8）：{desc or '(空响应)'}"
+                if fail_count >= 8:
+                    raise RuntimeError(
+                        f"检查扫码状态连续失败：{desc or '(空响应)'}（可能被限流，请稍后再试）"
+                    )
+                await asyncio.sleep(poll_ms / 1000)
+                continue
+
+            # 有状态：清零限流与失败计数，恢复 3s 节奏
+            fail_count = 0
+            rate_limit_since = 0.0
+            poll_ms = 3000
+
+            if status != last_status:
+                last_status = status
+                if status == "scanned":
+                    self.message = "已扫码，请在抖音 App 上点击【确认登录】"
+                elif status == "expired":
+                    self.message = "二维码已过期，请刷新"
+                else:
+                    self.message = f"等待扫码确认…（状态：{status}）"
+
+            if status == "scanned":
                 if not scanned:
                     scanned = True
-                    self.screen_name = str((d.get("scan_user_info") or {}).get("screen_name") or "")
+                    self.screen_name = str(
+                        (d.get("scan_user_info") or {}).get("screen_name") or ""
+                    )
                     self.status = "scanned"
                     self.message = (
                         f"{self.screen_name} 已扫码，请在抖音 App 上确认"
                         if self.screen_name
                         else "已扫码，请在抖音 App 上确认"
                     )
-            elif d.get("status") == "confirmed":
+            elif status in ("confirmed", "confirm", "success", "complete"):
                 if not self.jar.has("sessionid"):
                     raise RuntimeError("已确认但未拿到 sessionid，请重试")
+                # 尝试从 /passport/account/info/v2/ 补全昵称（user_data 偶尔不带）
+                ud = d.get("user_data") or {}
+                if not ud.get("screen_name") and not ud.get("name"):
+                    try:
+                        info = await self.call("/passport/account/info/v2/", None, None)
+                        info_data = (info or {}).get("data") or {}
+                        if info_data.get("screen_name"):
+                            ud["screen_name"] = info_data["screen_name"]
+                        elif info_data.get("name"):
+                            ud["name"] = info_data["name"]
+                    except (httpx.HTTPError, RuntimeError):
+                        # 昵称补全失败不阻断
+                        pass
                 self.cookies = [
                     {"name": name, "value": value, "domain": ".douyin.com", "path": "/"}
                     for name, value in self.jar.store.items()
                 ]
+                self.screen_name = str(ud.get("screen_name") or ud.get("name") or "")
                 self.status = "success"
                 self.message = "登录成功"
                 return
             elif int(d.get("error_code") or 0) == 4031:
-                raise RuntimeError("触发抖音风控（4031），请稍后重试或改用粘贴 Cookie 方式")
-            elif int(d.get("error_code") or 0) == 7:
-                # 操作太频繁：限流退避，等风控解除后继续轮询（confirmed 可能在限流期间发生）
-                await asyncio.sleep(5)
-                continue
-            await asyncio.sleep(3)
+                raise RuntimeError(
+                    "触发抖音风控（4031），请稍后重试或改用手机号短信验证码登录"
+                )
+            await asyncio.sleep(poll_ms / 1000)
         if not self.cancelled:
             raise RuntimeError("二维码已过期，请刷新后重新扫码")
 
