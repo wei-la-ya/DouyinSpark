@@ -83,8 +83,8 @@ async def external_setup_flow(
             resp = await client.post(f"{base}/dyspark/start", json=body)
         if resp.status_code != 200:
             raise RuntimeError(f"外置服务 start 返回 HTTP {resp.status_code}：{resp.text[:200]}")
-        data = resp.json()
-        page_url = data["page_url"]
+        # 链接用插件配置的地址拼接（不信服务端 base_url，反代子路径下会丢前缀）
+        page_url = f"{base}/dyspark/i/{auth}"
     except Exception as e:
         logger.warning(f"[DouyinSpark] 外置 start 失败 user_id={ev.user_id}: {e}")
         await bot.send(f"外置配置服务不可用：{e}")
