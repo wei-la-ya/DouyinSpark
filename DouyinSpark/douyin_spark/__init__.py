@@ -82,11 +82,11 @@ async def bind_email(bot: Bot, ev: Event) -> None:
 
 @sv.on_fullmatch("添加账号")
 async def add_account(bot: Bot, ev: Event) -> None:
-    if not _is_private(ev):
-        return await bot.send("为保护 Cookie，请私聊机器人发送 dy添加账号。")
-    url, minutes = await create_setup_link(ev.user_id, ev.bot_id)
-    await bot.send(f"请在 {minutes} 分钟内打开链接添加账号：\n{url}")
     await gs_subscribe.add_subscribe("session", "抖音续火结果", ev)
+    if external_base_url():
+        return await external_setup_flow(bot, ev, action_text="添加账号")
+    url, minutes = await create_setup_link(ev.user_id, ev.bot_id)
+    await send_setup_link(bot, ev, url, minutes, "添加账号")
 
 
 @sv.on_fullmatch("账号列表")
@@ -110,17 +110,15 @@ async def remove_account(bot: Bot, ev: Event) -> None:
 
 @sv.on_prefix("修改账号")
 async def edit_account(bot: Bot, ev: Event) -> None:
-    if not _is_private(ev):
-        return await bot.send("为保护 Cookie，请私聊机器人发送 dy修改账号 账号名。")
     name = ev.text.strip()
     accounts = await DyAccount.list_accounts(ev.user_id, ev.bot_id)
     account = next((a for a in accounts if a.name == name), None)
     if account is None:
         return await bot.send(f"未找到名为“{name}”的账号。")
+    if external_base_url():
+        return await external_setup_flow(bot, ev, account_id=account.id, action_text=f"修改账号“{name}”")
     url, minutes = await create_setup_link(ev.user_id, ev.bot_id, account_id=account.id)
-    await bot.send(
-        f"请在 {minutes} 分钟内打开链接修改账号“{name}”：\n{url}\n可更新 Cookie、消息模板，也可点「拉取会话列表」增删续火目标。"
-    )
+    await send_setup_link(bot, ev, url, minutes, f"修改账号“{name}”（可更新 Cookie、消息模板，也可点「拉取会话列表」增删续火目标）")
 
 
 @sv.on_command("添加好友")
@@ -138,11 +136,10 @@ async def add_target_via_web(bot: Bot, ev: Event) -> None:
         account = accounts[0]
     else:
         return await bot.send(f"你有多个账号，请指定账号名：{'、'.join(a.name for a in accounts)}")
+    if external_base_url():
+        return await external_setup_flow(bot, ev, account_id=account.id, action_text=f"为账号“{account.name}”增删续火目标")
     url, minutes = await create_setup_link(ev.user_id, ev.bot_id, account_id=account.id)
-    await bot.send(
-        f"请在 {minutes} 分钟内打开链接为账号“{account.name}”增删续火目标：\n{url}\n"
-        "打开后点击「拉取会话列表」，勾选新人后提交即可；已勾选的目标保持不变，Cookie 未过期无需重新扫码。"
-    )
+    await send_setup_link(bot, ev, url, minutes, f"为账号“{account.name}”增删续火目标（点「拉取会话列表」勾选新人后提交；已勾选的保持不变，Cookie 未过期无需重新扫码）")
 
 
 def _short_id(sec_uid: str) -> str:
