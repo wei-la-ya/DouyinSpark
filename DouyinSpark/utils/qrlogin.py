@@ -391,7 +391,7 @@ class QrLoginSession:
             try:
                 result = await self.call("/passport/web/check_qrconnect/", None, body)
             except httpx.HTTPError:
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
                 continue
             d = (result or {}).get("data") or {}
 
@@ -423,7 +423,11 @@ class QrLoginSession:
                 return
             elif int(d.get("error_code") or 0) == 4031:
                 raise RuntimeError("触发抖音风控（4031），请稍后重试或改用粘贴 Cookie 方式")
-            await asyncio.sleep(2)
+            elif int(d.get("error_code") or 0) == 7:
+                # 操作太频繁：限流退避，等风控解除后继续轮询（confirmed 可能在限流期间发生）
+                await asyncio.sleep(5)
+                continue
+            await asyncio.sleep(3)
         if not self.cancelled:
             raise RuntimeError("二维码已过期，请刷新后重新扫码")
 
