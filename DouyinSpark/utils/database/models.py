@@ -35,10 +35,27 @@ class DyAccount(BaseModel, table=True):
     @classmethod
     @with_session
     async def add_account(
-        cls, session: AsyncSession, user_id: str, bot_id: str, name: str, cookies: str, message_template: str
+        cls, session: AsyncSession, user_id: str, bot_id: str, name: str, cookies: str, message_template: str,
+        self_uid: str = "",
     ) -> "DyAccount":
-        """新增账号"""
-        account = cls(user_id=user_id, bot_id=bot_id, name=name, cookies=cookies, message_template=message_template)
+        """新增账号；同 (user_id, bot_id, self_uid) 已存在则就地更新（重复扫码场景）"""
+        if self_uid:
+            stmt = select(cls).where(
+                cls.user_id == user_id, cls.bot_id == bot_id, cls.self_uid == self_uid
+            )
+            existing = (await session.execute(stmt)).scalar_one_or_none()
+            if existing is not None:
+                existing.name = name
+                existing.cookies = cookies
+                existing.message_template = message_template
+                session.add(existing)
+                await session.flush()
+                await session.refresh(existing)
+                return existing
+        account = cls(
+            user_id=user_id, bot_id=bot_id, name=name, cookies=cookies,
+            message_template=message_template, self_uid=self_uid,
+        )
         session.add(account)
         await session.flush()
         await session.refresh(account)

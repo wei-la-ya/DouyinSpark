@@ -26,6 +26,57 @@ LISTEN_TIMEOUT_S = 600.0
 START_TIMEOUT_S = 10.0
 
 
+async def _extract_self_uid(cookies: list[dict[str, Any]]) -> str:
+    """从 cookie 列表解析当前账号 self_uid。
+
+    策略：
+    1. sessionid 在抖音 web 端是 32 位 hex 不是数字；跳过；
+    2. 调 /passport/account/info/v2/ 取 user_id（web 通道，最稳、跨平台）；
+    3. 失败时调一次 fetch_inbox_overview（imapi 通道，兜底）。
+    返回 "" 表示无法识别——此时 add_account 会退化为按 name 去重。
+    """
+    # 模块顶部已经 import logger，直接用闭包变量
+    _log = logger
+    uid = ""
+    try:
+        import httpx
+        # 防御：cookies 里 value 可能是 list（来自某些客户端序列化）；转字符串
+        def _cv(v: Any) -> str:
+            if isinstance(v, (list, tuple)):
+                return "; ".join(str(x) for x in v if x is not None)
+            return str(v) if v is not None else ""
+
+        cookie_header = "; ".join(
+            f"{c['name']}={_cv(c.get('value'))}" for c in cookies
+            if c.get("name") and c.get("value") is not None
+            and "douyin.com" in str(c.get("domain", "douyin.com"))
+        )
+        async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
+            r = await client.get(
+                "https://www.douyin.com/passport/account/info/v2/",
+                headers={
+                    "cookie": cookie_header,
+                    "user-agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/136.0.0.0 Safari/537.36"
+                    ),
+                    "referer": "https://www.douyin.com/",
+                },
+            )
+            if r.status_code == 200:
+                data = (r.json() or {}).get("data") or {}
+                uid = str(data.get("user_id") or "").strip()
+                if uid.isdigit():
+                    return uid
+    except Exception as e:
+        import traceback
+        _log.warning(f"[DouyinSpark] /passport/account/info/v2/ 探测失败: {e!r}\n{traceback.format_exc()}")
+        return ""
+    return uid
+
+
+
 def external_base_url() -> str:
     """外置模式开启时返回外置服务地址；未开启或地址为空返回空串"""
     if not dy_config.get_config("UseExternalSetup").data:
@@ -53,6 +104,7 @@ async def external_setup_flow(
 
     # 编辑模式：把现有账号数据带给外置服务做页面初始值
     initial: Dict[str, Any] = {}
+    existing_cookies: list[dict[str, Any]] = []
     if account_id is not None:
         accounts = await DyAccount.list_accounts(ev.user_id, ev.bot_id)
         account = next((a for a in accounts if a.id == account_id), None)
@@ -72,6 +124,13 @@ async def external_setup_flow(
             "email": pref.email,
             "successEmailEnabled": pref.success_email_enabled,
         }
+        # 编辑模式：把数据库里已有 cookies 带给外置服务，注入到 session.cookies_staged。
+        # Cookie 未过期就能直接拉取会话/保存（无需重新扫码）；过期时再走扫码更新。
+        if account.cookies:
+            try:
+                existing_cookies = json.loads(account.cookies)
+            except Exception as e:
+                logger.warning(f"[DouyinSpark] 编辑模式解析现有 cookies 失败 user_id={ev.user_id}: {e}")
 
     body = {
         "auth": auth,
@@ -80,6 +139,8 @@ async def external_setup_flow(
         "account_id": account_id,
         "initial": initial,
     }
+    if existing_cookies:
+        body["existing_cookies"] = existing_cookies
     try:
         async with httpx.AsyncClient(timeout=START_TIMEOUT_S, trust_env=False) as client:
             resp = await client.post(f"{base}/dyspark/start", json=body)
@@ -143,8 +204,15 @@ async def _listen_ws(base: str, auth: str) -> Optional[Dict[str, Any]]:
 async def _save_payload(ev: Event, account_id: Optional[int], payload: Dict[str, Any]) -> None:
     name = str(payload.get("name", "")).strip()
     cookies = payload.get("cookies")
+    device_id = str(payload.get("device_id", "")).strip()
     message_template = str(payload.get("message_template", ""))
     targets = payload.get("targets") or []
+
+    # 把 device_id 注入到 cookies 列表（作为伪 cookie）—— 后续 WS send 直接用
+    if device_id and cookies:
+        # 移除旧 device_id（如果有）再加新的，保持单条
+        cookies = [c for c in cookies if c.get("name") != "__dy_device_id"]
+        cookies.append({"name": "__dy_device_id", "value": device_id, "domain": ".douyin.com", "path": "/"})
 
     if account_id is not None:
         accounts = await DyAccount.list_accounts(ev.user_id, ev.bot_id)
@@ -158,9 +226,14 @@ async def _save_payload(ev: Event, account_id: Optional[int], payload: Dict[str,
         )
         aid = account_id
     else:
+        cookies_str = json.dumps(cookies, ensure_ascii=False)
+        # 新增场景：先拿 self_uid，用于后续按 (user, bot, self_uid) 去重
+        # 重复扫码同一抖音号时，第二次写入会替换第一次（不再产生"小柴郡、小柴郡"）
+        self_uid = ""
+        if cookies:
+            self_uid = await _extract_self_uid(cookies)
         account = await DyAccount.add_account(
-            ev.user_id, ev.bot_id, name,
-            json.dumps(cookies, ensure_ascii=False), message_template,
+            ev.user_id, ev.bot_id, name, cookies_str, message_template, self_uid=self_uid,
         )
         aid = account.id
 

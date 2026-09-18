@@ -117,7 +117,22 @@ async def fetch_init_pages(
         try:
             parsed = parse_get_by_user_init_response(bytes_)
         except Exception as error:
-            raise DouyinApiError(f"拉取会话列表失败：{error}", kind="api") from error
+            # 响应解析失败：多半是 Cookie 失效 / 风控命中导致返回了非 protobuf 内容
+            # 把响应头和前几字节打印出来，用户能据此判断下一步动作
+            preview_hex = bytes_[:64].hex() if bytes_ else ""
+            preview_text = ""
+            try:
+                preview_text = bytes_[:200].decode("utf-8", errors="replace") if bytes_ else ""
+            except Exception:
+                pass
+            from .api import _LAST_RESPONSE_CONTENT_TYPE  # type: ignore[attr-defined]
+            ct = _LAST_RESPONSE_CONTENT_TYPE
+            detail = (
+                f"响应解析失败（{error}）；content-type={ct or '?'}；"
+                f"前64字节hex={preview_hex}；前200字节utf8={preview_text!r}"
+            )
+            logger.warning(f"[DouyinSpark] {detail}")
+            raise DouyinApiError(f"拉取会话列表失败：{detail}", kind="parse") from error
         if parsed["self_uid"]:
             self_uid = parsed["self_uid"]
         pages.append(parsed)

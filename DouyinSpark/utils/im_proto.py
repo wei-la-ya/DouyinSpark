@@ -46,6 +46,22 @@ IM_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
 )
 
+# 抖音 IM (imapi) envelope 常量。来自 jumpbyte-bot 真实抓包（PC Electron 抖音 IM），
+# 原 douyin-id-spark 模板字段（sdk_version=1.1.3, biz=douyin_web, session_aid=6383）
+# 是 web 端抓的，发送会路由到 web 通道导致校验更严。需要切到 PC IM 通道。
+WEB_SDK_VERSION = "0.1.8"
+WEB_BUILD_NUMBER = "0d50935:feat/pc-im-group"
+WEB_SESSION_AID = "339757"
+WEB_APP_NAME = "douyin_pc"
+WEB_BIZ = "douyin_im_pc"          # 原模板 douyin_web 会按 web 路由校验 → 失败
+WEB_ACCESS = "web_sdk"
+WEB_PC_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) douyinim/1.1.33 Chrome/136.0.7103.59 "
+    "Electron/36.3.2 Safari/537.36"
+)
+WEB_REFERER = "https://imdesktop.douyin.com"
+
 
 # ===================== wire 基础读写 =====================
 
@@ -106,6 +122,10 @@ def _schema(*fields: tuple[int, str, str, bool]) -> dict[int, _Field]:
 
 
 _SCHEMAS: dict[str, dict[int, _Field]] = {
+    # cmd=100 (send_message) / cmd=609 (create_conversation) / cmd=2006 (conv_list)
+    # 注意：原本模板里的 f23 ts_sign / f24 sdk_cert / f25 request_sign 在原 douyin-id-spark
+    # 抓包瞬间是有效的，但移植成纯 Python 后这些"证书"变成死值，服务端校验失败导致
+    # 静默丢弃（仍返回 status_code=0 误导客户端）。jumpbyte-bot 走 auth_type=1 不需要这些字段。
     "DySendMsgRequest": _schema(
         (1, "cmd", "int32", False),
         (2, "sequence_id", "int32", False),
@@ -117,18 +137,17 @@ _SCHEMAS: dict[str, dict[int, _Field]] = {
         (8, "send_message_body", "SendMessageBody", False),
         (9, "device_id", "string", False),
         (11, "device_platform", "string", False),
+        (14, "session_ttl", "string", False),
         (15, "headers", "HeaderField", True),
         (18, "auth_type", "int32", False),
         (21, "biz", "string", False),
         (22, "access", "string", False),
-        (23, "ts_sign", "string", False),
-        (24, "sdk_cert", "string", False),
-        (25, "request_sign", "string", False),
     ),
     "SendMessageBody": _schema(
         (100, "send_message_content", "SendMessageContent", False),
         (609, "create_session_request", "CreateSessionRequest", False),
         (203, "get_by_user_init_query", "GetByUserInitQuery", False),
+        (1, "sender", "int64", False),  # web sdk 路径下服务端需要 sender uid
     ),
     "CreateSessionRequest": _schema(
         (1, "session_type", "int32", False),
@@ -231,7 +250,7 @@ _SCHEMAS: dict[str, dict[int, _Field]] = {
         (5, "sec_uid", "string", False),
     ),
     "DySendMsgResponse": _schema(
-        (1, "status_code", "int32", False),
+        (1, "status_code", "int32", False),       # 服务端实际语义：100=已处理但有错；0=完全成功
         (2, "data_size", "int32", False),
         (3, "error_code", "int32", False),
         (4, "status_message", "string", False),
@@ -365,35 +384,58 @@ def build_text_message_body(
     conversation_short_id: Union[str, int],
     text: str,
     client_message_id: str,
-    template_b64: Optional[str] = None,
+    template_b64: Optional[str] = None,  # noqa: ARG001 保留参数兼容旧调用
+    device_id: str = "0",
+    self_uid: str = "",
 ) -> bytes:
-    """构造发送文本消息的 protobuf 请求体（移植 buildTextMessageBody）。"""
-    request = decode_template(template_b64 or TEXT_MESSAGE_TEMPLATE)
-    body = request.get("send_message_body") or {}
-    content = body.get("send_message_content") or {}
+    """构造发送文本消息的 protobuf 请求体（cmd=100）。
 
-    content["conversation_id"] = conversation_id
-    content["conversation_short_id"] = int(conversation_short_id)
-    content["conversation_type"] = 1
-    content["message_type"] = 7
-    # 与 JS JSON.stringify({mention_users, aweType, richTextInfos, text}) 一致：
-    # 键序固定、无空格、非 ASCII 原样输出
-    content["content"] = json.dumps(
-        {"mention_users": [], "aweType": 700, "richTextInfos": [], "text": text},
+    不再使用模板（模板里的 ts_sign/sdk_cert/request_sign 是抓包瞬间的"证书"，
+    服务端复用后会校验失败 → 静默丢弃消息但仍返回 status_code=0 误导客户端）。
+    改为从零构造 envelope，与 jumpbyte-bot httpsend.go 一致：
+    auth_type=1（普通鉴权）、session_aid=339757、biz=douyin_im_pc。
+    """
+    content_json = json.dumps(
+        {"aweType": 700, "type": 0, "richTextInfos": [], "text": text},
         separators=(",", ":"),
         ensure_ascii=False,
     )
-    content["client_message_id"] = client_message_id
-
-    stime = f"{_now_ms()}.{random.randint(0, 9999)}"
-    for field in content.get("ext_fields", []):
-        if field.get("key") == "s:client_message_id":
-            field["value"] = client_message_id
-        elif field.get("key") == "s:stime":
-            field["value"] = stime
-
-    body["send_message_content"] = content
-    request["send_message_body"] = body
+    ms = _now_ms()
+    stime = f"{ms}.{random.randint(0, 9999)}"
+    send_message_content_dict = {
+        "conversation_id": conversation_id,
+        "conversation_type": 1,
+        "conversation_short_id": int(conversation_short_id),
+        "content": content_json,
+        "ext_fields": [
+            {"key": "s:mentioned_users", "value": ""},
+            {"key": "s:client_message_id", "value": client_message_id},
+            {"key": "s:stime", "value": stime},
+        ],
+        "message_type": 7,
+        "client_message_id": client_message_id,
+    }
+    send_message_body_dict: dict = {"send_message_content": send_message_content_dict}
+    # sender_uid：web sdk 路径下服务端需要这个字段确定消息发出方
+    if self_uid:
+        send_message_body_dict["sender"] = int(self_uid)
+    request = {
+        "cmd": 100,
+        "sequence_id": random.randint(10000, 92220),
+        "sdk_version": WEB_SDK_VERSION,
+        "token": "",  # auth_type=1 不需要证书
+        "refer": 3,
+        "inbox_type": 0,
+        "build_number": WEB_BUILD_NUMBER,
+        "send_message_body": send_message_body_dict,
+        "device_id": device_id or "0",
+        "device_platform": WEB_APP_NAME,
+        "session_ttl": "360000",
+        "headers": _build_im_headers(device_id or "0"),
+        "auth_type": 1,  # 关键：不用模板里的 4 (CERT_AUTH)
+        "biz": WEB_BIZ,
+        "access": WEB_ACCESS,
+    }
     return _encode("DySendMsgRequest", request)
 
 
@@ -401,19 +443,35 @@ def build_create_conversation_body(
     *,
     receiver_uid: Union[str, int],
     sender_uid: Union[str, int, None] = None,
-    template_b64: Optional[str] = None,
+    template_b64: Optional[str] = None,  # noqa: ARG001
+    device_id: str = "0",
+    self_uid: str = "",  # noqa: ARG001 兼容旧调用
 ) -> bytes:
-    """构造创建会话的 protobuf 请求体（移植 buildCreateConversationBody）。"""
-    request = decode_template(template_b64 or CREATE_CONVERSATION_TEMPLATE)
-    body = request.get("send_message_body") or {}
-    create = body.get("create_session_request") or {"session_type": 1}
+    """构造创建会话的 protobuf 请求体（cmd=609）。
 
+    与 build_text_message_body 同理：从零构造 envelope，不依赖模板。
+    """
+    users = [int(receiver_uid)]
     if sender_uid:
-        create["user"] = [int(receiver_uid), int(sender_uid)]
-    else:
-        create["user"] = [int(receiver_uid)]
-    body["create_session_request"] = create
-    request["send_message_body"] = body
+        users.append(int(sender_uid))
+    create_session_dict = {"session_type": 1, "user": users}
+    request = {
+        "cmd": 609,
+        "sequence_id": random.randint(10000, 92220),
+        "sdk_version": WEB_SDK_VERSION,
+        "token": "",
+        "refer": 3,
+        "inbox_type": 0,
+        "build_number": WEB_BUILD_NUMBER,
+        "send_message_body": {"create_session_request": create_session_dict},
+        "device_id": device_id or "0",
+        "device_platform": WEB_APP_NAME,
+        "session_ttl": "360000",
+        "headers": _build_im_headers(device_id or "0"),
+        "auth_type": 1,
+        "biz": WEB_BIZ,
+        "access": WEB_ACCESS,
+    }
     return _encode("DySendMsgRequest", request)
 
 
@@ -467,6 +525,35 @@ def _build_init_headers() -> list[dict[str, str]]:
         ("referer", ""),
         ("timezone_name", "Asia/Shanghai"),
         ("deviceId", "0"),
+        ("is-retry", "0"),
+    ]
+    return [{"field_name": k, "field_value": v} for k, v in pairs]
+
+
+def _build_im_headers(device_id: str = "0") -> list[dict[str, str]]:
+    """发消息 / 创建会话用的 f15 指纹。
+
+    与 jumpbyte-bot 一致：session_aid=339757 (PC IM)、UA 用 Electron douyinim、
+    平台 Win32（与 imdesktop UA 对齐）。
+    """
+    ua = WEB_PC_UA
+    browser_version = ua.replace("Mozilla/", "")
+    pairs = [
+        ("session_aid", WEB_SESSION_AID),
+        ("session_did", device_id or "0"),
+        ("app_name", WEB_APP_NAME),
+        ("priority_region", "cn"),
+        ("user_agent", ua),
+        ("cookie_enabled", "true"),
+        ("browser_language", "zh-CN"),
+        ("browser_platform", "Win32"),
+        ("browser_name", "Mozilla"),
+        ("browser_version", browser_version),
+        ("browser_online", "true"),
+        ("screen_width", "1707"),
+        ("screen_height", "1067"),
+        ("referer", ""),
+        ("timezone_name", "Asia/Shanghai"),
         ("is-retry", "0"),
     ]
     return [{"field_name": k, "field_value": v} for k, v in pairs]

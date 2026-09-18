@@ -34,6 +34,8 @@ USER_AGENT = (
 )
 
 IMAPI_BASE = "https://imapi.douyin.com"
+# 最近一次 IM 响应的 content-type（conversations 解析失败时用于诊断 cookie/风控）
+_LAST_RESPONSE_CONTENT_TYPE: Optional[str] = None
 PROFILE_API = "https://www.douyin.com/aweme/v1/web/user/profile/other/"
 REQUEST_TIMEOUT = 20.0  # 秒（JS REQUEST_TIMEOUT_MS = 20000）
 
@@ -98,19 +100,14 @@ def get_cookie_value(cookies: Sequence[dict[str, Any]], name: str) -> str:
 
 
 def _im_headers(cookie_header: str) -> dict[str, str]:
+    # 与 jumpbyte-bot httpsend.go postIMAPIRaw 完全对齐（只设 4 个 header）：
+    # 实测：加 Origin / sec-fetch-* 等会触发服务端风控返回 StatusCode_130
+    from .im_proto import WEB_PC_UA, WEB_REFERER
     return {
         "cookie": cookie_header,
-        "accept": "application/x-protobuf",
-        "accept-language": "zh-CN,zh;q=0.9",
-        "cache-control": "no-cache",
-        "origin": "https://www.douyin.com",
         "content-type": "application/x-protobuf",
-        "pragma": "no-cache",
-        "referer": "https://www.douyin.com/",
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-site",
-        "user-agent": USER_AGENT,
+        "user-agent": WEB_PC_UA,
+        "referer": WEB_REFERER,
     }
 
 
@@ -159,20 +156,21 @@ async def post_im_proto(
         parsed = parse_im_response(bytes_)
     except Exception as error:
         raise DouyinApiError(f"{action}：响应解析失败（{error}）", kind="parse") from error
-    if parsed["status_message"] != "OK":
+    # 抖音 IM send/create 响应：f1=status_code，0=OK，100=业务错误（带 status_message）
+    # 注意：错误响应里 f1=100、f4=status_message=StatusCode_130，不能只看 status_message=="OK"
+    if parsed.get("status_code", 0) != 0 or parsed.get("status_message") != "OK":
+        detail = parsed.get("status_message") or "未知错误"
+        err_code = parsed.get("error_code") or 0
         extra = parsed.get("extra_info") or {}
         extra_code = extra.get("status_code") if isinstance(extra, dict) else None
-        detail = (extra.get("status_message") if isinstance(extra, dict) else None) or parsed[
-            "status_message"
-        ] or "未知错误"
-        # 8101/7174 在参考实现中被视为可容忍状态
-        tolerated = extra_code in (8101, 7174)
+        tolerated = extra_code in (8101, 7174) or err_code in (8101, 7174)
         if not tolerated:
             kind = "auth" if re.search(r"登录|登录态|session", detail, re.I) else "api"
+            code = extra_code if extra_code is not None else err_code
             raise DouyinApiError(
-                f"{action}：{detail}" + (f"（状态码 {extra_code}）" if extra_code is not None else ""),
+                f"{action}：{detail}" + (f"（状态码 {code}）" if code else ""),
                 kind=kind,
-                status_code=extra_code,
+                status_code=code,
                 status_msg=detail,
             )
     return parsed
@@ -188,6 +186,7 @@ async def post_im_proto_raw(
     client: Optional[httpx.AsyncClient] = None,
 ) -> bytes:
     """发送 imapi protobuf 请求并返回原始字节（调用方按各自接口结构解析）。"""
+    global _LAST_RESPONSE_CONTENT_TYPE
     url = f"{IMAPI_BASE}{path}"
     if signed:
         ms_token = gen_ms_token()
@@ -199,6 +198,7 @@ async def post_im_proto_raw(
             response = await http.post(url, headers=_im_headers(cookie_header), content=body)
         except httpx.HTTPError as error:
             raise DouyinApiError(f"{action}：网络请求异常（{error}）", kind="network") from error
+    _LAST_RESPONSE_CONTENT_TYPE = response.headers.get("content-type")
     _assert_http_ok(response, action)
     return response.content
 
@@ -344,11 +344,25 @@ async def create_conversation(
     receiver_uid: Union[str, int],
     sender_uid: Union[str, int, None] = None,
     template_b64: Optional[str] = None,
+    cookies: Optional[list[dict[str, Any]]] = None,
+    device_id: str = "0",
     client: Optional[httpx.AsyncClient] = None,
 ) -> dict[str, Any]:
     """创建/获取与对方的私信会话。返回 {conversation_id, conversation_short_id, self_uid}。"""
+    # imapi HTTP 通道要求设备指纹：连一次 frontier WS 让服务端注册当前 device_id
+    if cookies and device_id and device_id != "0":
+        try:
+            from .ws_init import ensure_device_registered
+            await ensure_device_registered(
+                "; ".join(f"{c['name']}={c['value']}" for c in cookies if c.get("name") and c.get("value") is not None),
+                device_id, timeout=10.0,
+            )
+        except Exception:
+            pass
+
     body = build_create_conversation_body(
-        receiver_uid=receiver_uid, sender_uid=sender_uid, template_b64=template_b64
+        receiver_uid=receiver_uid, sender_uid=sender_uid, template_b64=template_b64,
+        device_id=device_id, self_uid=str(sender_uid or ""),
     )
     # 参考实现创建会话时不带签名参数
     parsed = await post_im_proto(
@@ -370,9 +384,23 @@ async def send_text_message(
     conversation_short_id: Union[str, int],
     text: str,
     template_b64: Optional[str] = None,
+    cookies: Optional[list[dict[str, Any]]] = None,
+    device_id: str = "0",
+    self_uid: str = "",
     client: Optional[httpx.AsyncClient] = None,
 ) -> dict[str, Any]:
     """发送文本私信。返回 {request_id}。"""
+    # imapi HTTP 通道要求设备指纹：连一次 frontier WS 让服务端注册当前 device_id
+    if cookies and device_id and device_id != "0":
+        try:
+            from .ws_init import ensure_device_registered
+            await ensure_device_registered(
+                "; ".join(f"{c['name']}={c['value']}" for c in cookies if c.get("name") and c.get("value") is not None),
+                device_id, timeout=10.0,
+            )
+        except Exception:
+            pass
+
     client_message_id = str(uuid.uuid4())
     body = build_text_message_body(
         conversation_id=conversation_id,
@@ -380,6 +408,8 @@ async def send_text_message(
         text=text,
         client_message_id=client_message_id,
         template_b64=template_b64,
+        device_id=device_id,
+        self_uid=self_uid,
     )
     parsed = await post_im_proto(
         "/v1/message/send", cookie_header, body, "发送私信", client=client

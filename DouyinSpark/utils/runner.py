@@ -103,8 +103,30 @@ async def _run_account(account: DyAccount) -> AccountResult:
     if not get_cookie_value(cookie_list, "sessionid"):
         raise ValueError("Cookie 中缺少 sessionid，请修改账号更新 Cookie")
 
+    # imapi HTTP 通道要求设备指纹注册（access_key 基于 device_id 计算）。
+    # 没有这一步服务端会返回 StatusCode_130 静默拒绝所有 HTTP imapi 请求。
+    # 连接 frontier WS（jumpbyte-bot 用的同一端点）一次即可注册，缓存 1 小时。
+    device_id = account.self_uid or "0"
+    if device_id != "0":
+        try:
+            from .ws_init import ensure_device_registered
+            ok = await ensure_device_registered(cookies, device_id, timeout=10.0)
+            if not ok:
+                # 注册失败不阻塞——下面会再失败一次给出更具体错误
+                logger.info(f"[{account.name}] WS 设备注册失败，继续尝试 imapi")
+        except Exception as e:
+            logger.info(f"[{account.name}] WS 设备注册异常：{e}")
+
     # 收件箱总览：selfUid + 会话补全 + 「今天已续过」过滤依据
-    overview = await fetch_inbox_overview(cookie_header)
+    try:
+        overview = await fetch_inbox_overview(cookie_header)
+    except DouyinApiError as e:
+        if e.kind == "parse":
+            # 响应非 protobuf：基本就是 Cookie 失效或被风控，给用户可执行的下一步
+            raise ValueError(
+                f"拉取会话列表失败：{e}。可能是 Cookie 失效或被风控，请发送 dy修改账号 更新 Cookie 后重试"
+            ) from e
+        raise
     self_uid = str(overview["self_uid"] or "") or account.self_uid
     if self_uid and self_uid != account.self_uid:
         await DyAccount.update_self_uid(account.id, self_uid)
@@ -161,7 +183,7 @@ async def _run_account(account: DyAccount) -> AccountResult:
                     target.nickname = profile["nickname"]
                     logger.info(f"[{account.name}] 目标昵称变更：{old_name} -> {profile['nickname']}")
 
-            # 2. 补全会话信息：优先收件箱已有会话，陌生人兜底 create
+            # 2. 补全会话信息：优先收件箱已有会话（同时刷新过期的 short_id/ticket），陌生人兜底 create
             if not target.conversation_id:
                 if inbox_entry:
                     await DyTarget.update_target_conversation(
@@ -172,7 +194,12 @@ async def _run_account(account: DyAccount) -> AccountResult:
                     logger.info(f"[{account.name}] 已从收件箱补全会话：{target.nickname or target.sec_uid[:12]}")
                 else:
                     created = await create_conversation(
-                        cookie_header, receiver_uid=profile["uid"], sender_uid=self_uid or None, template_b64=template_b64
+                        cookie_header,
+                        receiver_uid=profile["uid"],
+                        sender_uid=self_uid or None,
+                        template_b64=template_b64,
+                        cookies=cookie_list,
+                        device_id=device_id,
                     )
                     await DyTarget.update_target_conversation(
                         target.id, str(profile["uid"]), str(created["conversation_id"]), str(created["conversation_short_id"]), str(created.get("ticket", ""))
@@ -180,6 +207,23 @@ async def _run_account(account: DyAccount) -> AccountResult:
                     target.conversation_id = created["conversation_id"]
                     target.conversation_short_id = created["conversation_short_id"]
                     logger.info(f"[{account.name}] 已创建会话：{target.nickname}")
+            elif inbox_entry and (
+                inbox_entry["conversation_short_id"] != target.conversation_short_id
+                or inbox_entry.get("ticket", "") != (target.ticket or "")
+            ):
+                # DB 有老 conv_id 但 short_id/ticket 已过期（服务端会轮换），用最新的覆盖
+                # 实测：send 用过期的 short_id 服务端返 status_code=7905「你已不在群聊内」
+                await DyTarget.update_target_conversation(
+                    target.id, str(profile["uid"]),
+                    inbox_entry["conversation_id"], inbox_entry["conversation_short_id"],
+                    inbox_entry.get("ticket", ""),
+                )
+                target.conversation_id = inbox_entry["conversation_id"]
+                target.conversation_short_id = inbox_entry["conversation_short_id"]
+                target.ticket = inbox_entry.get("ticket", "")
+                logger.info(
+                    f"[{account.name}] 刷新会话 short_id（防 7905 风控）：{target.nickname or target.sec_uid[:12]}"
+                )
 
             # 3. 发送消息（后台全程按 ID 寻址，与昵称无关）
             yiyan = await pick_yiyan() if needs_yiyan else None
@@ -196,6 +240,9 @@ async def _run_account(account: DyAccount) -> AccountResult:
                 conversation_short_id=target.conversation_short_id,
                 text=message,
                 template_b64=template_b64,
+                cookies=cookie_list,
+                device_id=account.self_uid or "0",
+                self_uid=account.self_uid or "",
             )
             sent += 1
             logger.info(f"[{account.name}] 已发送消息：{target.nickname}（ID: {target.sec_uid[:12]}…）")
