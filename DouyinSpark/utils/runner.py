@@ -226,6 +226,8 @@ async def _run_account(account: DyAccount) -> AccountResult:
                 )
 
             # 3. 发送消息（后台全程按 ID 寻址，与昵称无关）
+            # 关键：每次 send 都用 inbox_entry 的最新 short_id（来自本次 fetch_inbox_overview），
+            # 不依赖 DB 缓存。DB 只在 inbox_entry 缺失时作兜底。
             yiyan = await pick_yiyan() if needs_yiyan else None
             if template:
                 message = render_template(template, account.name, target.nickname or target.sec_uid, yiyan)
@@ -234,13 +236,20 @@ async def _run_account(account: DyAccount) -> AccountResult:
                 message = f'{yiyan["hitokoto"]}\n——「{yiyan["from"]}」' if include_source else yiyan["hitokoto"]
             else:
                 message = "续火🔥"
+            # 用 inbox_entry 的最新 short_id（如果有），否则用 DB 缓存（兜底陌生人场景）
+            send_conv_id = inbox_entry["conversation_id"] if inbox_entry else target.conversation_id
+            send_short_id = (
+                str(inbox_entry["conversation_short_id"]) if inbox_entry
+                else target.conversation_short_id
+            )
+            send_ticket = inbox_entry["ticket"] if inbox_entry else (target.ticket or "")
             # 发送消息（带 1 次短 ID 重试：服务端短期 ID 会过期，失败时用最新值再试）
             for _attempt in range(2):
                 try:
                     await send_text_message(
                         cookie_header,
-                        conversation_id=target.conversation_id,
-                        conversation_short_id=target.conversation_short_id,
+                        conversation_id=send_conv_id,
+                        conversation_short_id=send_short_id,
                         text=message,
                         template_b64=template_b64,
                         cookies=cookie_list,
@@ -249,24 +258,34 @@ async def _run_account(account: DyAccount) -> AccountResult:
                     )
                     sent += 1
                     logger.info(f"[{account.name}] 已发送消息：{target.nickname}（ID: {target.sec_uid[:12]}…）")
+                    # 异步把最新 short_id 写回 DB（fire and forget，不阻塞 send）
+                    if inbox_entry:
+                        try:
+                            await DyTarget.update_target_conversation(
+                                target.id, str(profile["uid"]),
+                                inbox_entry["conversation_id"],
+                                str(inbox_entry["conversation_short_id"]),
+                                inbox_entry["ticket"],
+                            )
+                        except Exception:
+                            pass
                     break
                 except DouyinApiError as e:
                     if _attempt == 0 and inbox_entry and "7905" in str(e):
-                        # 短 ID 过期（服务端返 7905「你已不在群聊内」），强制用最新 inbox_entry 覆盖再试
-                        fresh = by_sec_uid.get(target.sec_uid)
-                        if fresh and fresh["conversation_short_id"] != target.conversation_short_id:
-                            await DyTarget.update_target_conversation(
-                                target.id, str(profile["uid"]),
-                                fresh["conversation_id"], fresh["conversation_short_id"],
-                                fresh.get("ticket", ""),
-                            )
-                            target.conversation_id = fresh["conversation_id"]
-                            target.conversation_short_id = fresh["conversation_short_id"]
-                            target.ticket = fresh.get("ticket", "")
-                            logger.info(
-                                f"[{account.name}] 短 ID 过期，刷新后重试：{target.nickname or target.sec_uid[:12]}"
-                            )
-                            continue
+                        # 短 ID 在 fetch_inbox_overview 之后又被服务端轮换，重新拉一次
+                        try:
+                            overview2 = await fetch_inbox_overview(cookie_header)
+                            fresh = overview2.get("by_sec_uid", {}).get(target.sec_uid)
+                            if fresh and str(fresh["conversation_short_id"]) != send_short_id:
+                                send_conv_id = fresh["conversation_id"]
+                                send_short_id = str(fresh["conversation_short_id"])
+                                send_ticket = fresh["ticket"]
+                                logger.info(
+                                    f"[{account.name}] 短 ID 被服务端轮换，重新拉取后重试：{target.nickname or target.sec_uid[:12]}"
+                                )
+                                continue
+                        except Exception:
+                            pass
                     raise
         except DouyinApiError as e:
             target_errors.append(f"{target.nickname or target.sec_uid[:12]}：{e}")
