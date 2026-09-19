@@ -163,6 +163,15 @@ async def post_im_proto(
         err_code = parsed.get("error_code") or 0
         extra = parsed.get("extra_info") or {}
         extra_code = extra.get("status_code") if isinstance(extra, dict) else None
+        # 异步风控详情（有时 message_data.message_info.extra_info 内嵌 status_code=7905）
+        if isinstance(extra_code, int) and extra_code >= 1000:
+            # 异步风控拒绝 - 用 extra_code 报错
+            extra_tip = ""
+            if isinstance(extra, dict):
+                msg = extra.get("status_msg") or {}
+                content = msg.get("msg_content") or {}
+                extra_tip = content.get("tips") or ""
+            detail = extra_tip or detail
         tolerated = extra_code in (8101, 7174) or err_code in (8101, 7174)
         if not tolerated:
             kind = "auth" if re.search(r"登录|登录态|session", detail, re.I) else "api"

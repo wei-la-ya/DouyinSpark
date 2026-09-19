@@ -478,7 +478,8 @@ def build_create_conversation_body(
 def parse_im_response(data: bytes) -> dict[str, Any]:
     """解析 imapi 响应（message/send 与 conversation/create 共用同一外层结构）。
 
-    返回 {status_message, request_id, self_uid, conversation_id, conversation_short_id, extra_info}
+    返回 {status_code, error_code, status_message, request_id, self_uid,
+          conversation_id, conversation_short_id, extra_info}
     （int64 字段为 Python int，对应 JS 版 longs:String 的字符串值）。
     """
     response = _decode("DySendMsgResponse", data)
@@ -493,6 +494,9 @@ def parse_im_response(data: bytes) -> dict[str, Any]:
             extra_info = {"raw": raw_extra}
     create_info = (message_data.get("create_info") or {}).get("info") or {}
     return {
+        "status_code": response.get("status_code", 0),
+        "error_code": response.get("error_code", 0),
+        "data_size": response.get("data_size", 0),
         "status_message": response.get("status_message", ""),
         "request_id": response.get("request_id", ""),
         "self_uid": response.get("user_id", 0),
