@@ -152,7 +152,13 @@ async def external_setup_flow(
         await bot.send(f"外置配置服务不可用：{e}")
         return
 
-    await bot.send(f"请在 10 分钟内打开链接{action_text}：\n{page_url}")
+    # 群聊触发：链接走私聊（send_setup_link 内部处理私聊/邮件兜底），避免在群里泄露
+    if ev.group_id:
+        sent = await send_setup_link(bot, ev, page_url, 10, action_text)
+        if not sent:
+            return  # 私聊+邮件都失败，send_setup_link 已告知用户
+    else:
+        await bot.send(f"请在 10 分钟内打开链接{action_text}：\n{page_url}")
     logger.info(f"[DouyinSpark] 外置配置页已发送 user_id={ev.user_id} url={page_url}")
 
     result = await _listen_ws(base, auth)
