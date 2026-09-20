@@ -21,7 +21,7 @@ from ..utils.runner import normalize_template
 from .page import _SETUP_PAGE_HTML
 
 PAGE_PREFIX = "/douyin-spark"
-LINK_EXPIRES_MINUTES = 10
+LINK_EXPIRES_MINUTES = 3
 
 setup_sessions: Dict[str, Dict[str, Any]] = {}
 scan_sessions: Dict[str, Any] = {}
