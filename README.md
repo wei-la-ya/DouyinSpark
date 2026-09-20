@@ -1,5 +1,11 @@
 # DouyinSpark 抖音续火插件
 
+<h4 align = "center">🚧支持OneBot(QQ)、QQ频道、微信、开黑啦、Telegram的异环插件🚧</h4>
+<div align="center">
+  <a href="https://docs.sayu-bot.com/" target="_blank">安装文档</a> &nbsp; · &nbsp;
+  <a href="https://github.com/Genshin-bots/gsuid_core" target="_blank">gsuid_core</a> &nbsp; · &nbsp;
+</div>
+
 > 你跟朋友在抖音上已经续了三百多天的火花，但是今天你很忙，没有上抖音跟你朋友续火，时间慢慢来到第二天，你的电话响了，是你朋友，你似乎想起来今天忘了什么事情了……
 
 ## 丨安装提醒
