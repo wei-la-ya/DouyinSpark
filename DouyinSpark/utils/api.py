@@ -27,7 +27,7 @@ from .im_proto import (
     parse_im_response,
 )
 
-# 与 IM 请求模板内嵌指纹保持一致的 UA（模板 headers 里的 user_agent 也是它）
+# 用于非 imapi 的 web REST 端点（如 user_info 探测）的 UA
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
@@ -95,13 +95,11 @@ def get_cookie_value(cookies: Sequence[dict[str, Any]], name: str) -> str:
     return ""
 
 
-# 注意：Cookie 里的 uid_tt 不是 uid 的十六进制（实测转换结果是乱码数字），
-# 自己的 uid 只能从 get_message_by_init 响应（field 13）或会话 ID 推断，见 conversations.py
-
-
 def _im_headers(cookie_header: str) -> dict[str, str]:
-    # 与 jumpbyte-bot httpsend.go postIMAPIRaw 完全对齐（只设 4 个 header）：
-    # 实测：加 Origin / sec-fetch-* 等会触发服务端风控返回 StatusCode_130
+    """对齐 jumpbyte-bot httpsend.go postIMAPIRaw：只设 4 个 header。
+
+    实测：加 Origin / sec-fetch-* / accept-language 等会触发服务端风控返回 StatusCode_130。
+    """
     from .im_proto import WEB_PC_UA, WEB_REFERER
     return {
         "cookie": cookie_header,
@@ -358,17 +356,6 @@ async def create_conversation(
     client: Optional[httpx.AsyncClient] = None,
 ) -> dict[str, Any]:
     """创建/获取与对方的私信会话。返回 {conversation_id, conversation_short_id, self_uid}。"""
-    # imapi HTTP 通道要求设备指纹：连一次 frontier WS 让服务端注册当前 device_id
-    if cookies and device_id and device_id != "0":
-        try:
-            from .ws_init import ensure_device_registered
-            await ensure_device_registered(
-                "; ".join(f"{c['name']}={c['value']}" for c in cookies if c.get("name") and c.get("value") is not None),
-                device_id, timeout=10.0,
-            )
-        except Exception:
-            pass
-
     body = build_create_conversation_body(
         receiver_uid=receiver_uid, sender_uid=sender_uid, template_b64=template_b64,
         device_id=device_id, self_uid=str(sender_uid or ""),
@@ -399,17 +386,6 @@ async def send_text_message(
     client: Optional[httpx.AsyncClient] = None,
 ) -> dict[str, Any]:
     """发送文本私信。返回 {request_id}。"""
-    # imapi HTTP 通道要求设备指纹：连一次 frontier WS 让服务端注册当前 device_id
-    if cookies and device_id and device_id != "0":
-        try:
-            from .ws_init import ensure_device_registered
-            await ensure_device_registered(
-                "; ".join(f"{c['name']}={c['value']}" for c in cookies if c.get("name") and c.get("value") is not None),
-                device_id, timeout=10.0,
-            )
-        except Exception:
-            pass
-
     client_message_id = str(uuid.uuid4())
     body = build_text_message_body(
         conversation_id=conversation_id,

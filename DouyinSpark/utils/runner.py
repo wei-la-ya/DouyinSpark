@@ -103,20 +103,6 @@ async def _run_account(account: DyAccount) -> AccountResult:
     if not get_cookie_value(cookie_list, "sessionid"):
         raise ValueError("Cookie 中缺少 sessionid，请修改账号更新 Cookie")
 
-    # imapi HTTP 通道要求设备指纹注册（access_key 基于 device_id 计算）。
-    # 没有这一步服务端会返回 StatusCode_130 静默拒绝所有 HTTP imapi 请求。
-    # 连接 frontier WS（jumpbyte-bot 用的同一端点）一次即可注册，缓存 1 小时。
-    device_id = account.self_uid or "0"
-    if device_id != "0":
-        try:
-            from .ws_init import ensure_device_registered
-            ok = await ensure_device_registered(cookies, device_id, timeout=10.0)
-            if not ok:
-                # 注册失败不阻塞——下面会再失败一次给出更具体错误
-                logger.info(f"[{account.name}] WS 设备注册失败，继续尝试 imapi")
-        except Exception as e:
-            logger.info(f"[{account.name}] WS 设备注册异常：{e}")
-
     # 收件箱总览：selfUid + 会话补全 + 「今天已续过」过滤依据
     try:
         overview = await fetch_inbox_overview(cookie_header)
