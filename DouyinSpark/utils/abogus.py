@@ -1,13 +1,6 @@
-"""a_bogus 签名（抖音 web，cus 变体）。
+"""a_bogus 签名（抖音 web 端，cus 变体）。
 
-忠实移植自 douyin-id-spark 的 abogus-src.js / abogus.js
-（算法来源：https://github.com/ShilongLee/Crawler/blob/main/lib/js/douyin.js，
-SM3 + 魔改 RC4 + 环境指纹 + 魔改 Base64，纯算法零依赖）。
-
-已知 JS 原版偏差（移植时修复，特此说明）：
-- abogus-src.js 的 SM3.sum(e, 'hex') 分支引用了未定义的函数 `se`（补零函数），
-  JS 调用该分支会抛 ReferenceError；签名流程只用到数组分支所以从未触发。
-  Python 版按意图实现为 str.zfill(8) 等价的 08x 格式化。
+SM3 + 魔改 RC4 + 环境指纹 + 魔改 Base64，纯算法零依赖。
 """
 
 from __future__ import annotations
@@ -55,7 +48,7 @@ def rc4_encrypt(plaintext: str, key: str) -> str:
     return "".join(cipher)
 
 
-# ===================== SM3（ShilongLee 实现，逐行移植） =====================
+# ===================== SM3 =====================
 
 _MASK32 = 0xFFFFFFFF
 
@@ -91,7 +84,7 @@ def _he(e: int, r: int, t: int, n: int) -> int:
 
 
 class SM3:
-    """逐行移植 abogus-src.js 的 SM3（reg/chunk/size + write/sum/_compress/_fill）。"""
+    """SM3 实现（reg/chunk/size + write/sum/_compress/_fill）。"""
 
     def __init__(self) -> None:
         self.reg: list[int] = [0] * 8
@@ -280,7 +273,7 @@ def _generate_rc4_bb_str(
     arguments: Sequence[int] = (0, 1, 14),
     now: Optional[Callable[[], int]] = None,
 ) -> str:
-    """移植 generate_rc4_bb_str。now 仅供测试注入（等价 JS Date.now）。"""
+    """RC4 字节流（generate_rc4_bb_str）。"""
     now_fn = now or _now_ms
     sm3 = SM3()
     start_time = now_fn()

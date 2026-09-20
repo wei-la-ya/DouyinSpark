@@ -198,7 +198,7 @@ async def _run_account(account: DyAccount) -> AccountResult:
                 or inbox_entry.get("ticket", "") != (target.ticket or "")
             ):
                 # DB 有老 conv_id 但 short_id/ticket 已过期（服务端会轮换），用最新的覆盖
-                # 实测：send 用过期的 short_id 服务端返 status_code=7905「你已不在群聊内」
+                # 7905「你已不在群聊内」= 短 ID 过期，重新拉取最新值
                 await DyTarget.update_target_conversation(
                     target.id, str(profile["uid"]),
                     inbox_entry["conversation_id"], inbox_entry["conversation_short_id"],

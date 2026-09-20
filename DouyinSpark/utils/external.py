@@ -1,7 +1,6 @@
 """外置配置页流程：start(HTTP) -> 发链接 -> listen(WS) -> 写库 -> 通知用户
 
-参考 NTEUID 的外置登录（tyql688/NTEUID + nte-login），但不做共享密钥签名——仅 WS。
-外置服务约定见 plugins/DouyinSpark/external/main.py。
+外置服务约定见 douyin-spark-login 项目。
 """
 from __future__ import annotations
 

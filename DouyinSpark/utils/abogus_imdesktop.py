@@ -1,7 +1,6 @@
 """a_bogus 签名（抖音 imdesktop.douyin.com，dhzx 变体）。
 
-忠实移植自 jumpbyte-bot / 抖音Cookie.js 的 getABogus 实现。
-签名用在 imdesktop passport 接口（/passport/web/get_qrcode/、
+签名用在 imdesktop passport 接口（/passport/web/get_qrcode/ 、
 /passport/web/check_qrconnect/ 等），与 web 端 cus 变体算法不同。
 
 算法组成：
@@ -20,7 +19,7 @@ from typing import Callable, Optional
 
 from .abogus import SM3
 
-# 固定环境串（取自 jumpbyte-bot 真机 HAR）
+# 固定环境串（抖音 imdesktop 客户端默认值）
 _FIXED_ENV = "784|943|1707|1019|1707|1019|1707|1067|MacIntel"
 
 # base64 编码表（与 web 端 s4 相同）

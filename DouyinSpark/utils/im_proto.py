@@ -1,15 +1,11 @@
 """抖音 IM protobuf 编解码（手工 wire 实现，不依赖 protobuf 库）。
 
-忠实移植自 douyin-id-spark 的 im-proto.js / im-templates.js：
-抓包模板 decode -> patch 业务字段 -> encode；模板中的
-token / ts_sign / sdk_cert / request_sign 等长效设备凭据原样保留。
-
 编解码语义对齐 protobufjs：
 - decode 只保留 wire 上出现的字段（忽略未知字段）；
 - encode 按 proto schema 字段号升序输出，且「只要字段出现就编码」
   （proto3 默认值的 0 / 空串也照写，protobufjs 是 hasOwnProperty 语义）；
 - proto3 repeated 数值字段 decode 同时兼容 packed / 非 packed，encode 逐元素非 packed
-  （protobufjs 在未显式声明 packed 选项时如此，抓包模板即非 packed）；
+  （protobufjs 在未显式声明 packed 选项时如此）；
 - int64 用 Python int（无 JS Number 精度问题，无需 Long 字符串转换）。
 """
 
@@ -39,9 +35,7 @@ IM_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
 )
 
-# 抖音 IM (imapi) envelope 常量。来自 jumpbyte-bot 真实抓包（PC Electron 抖音 IM），
-# 原 douyin-id-spark 模板字段（sdk_version=1.1.3, biz=douyin_web, session_aid=6383）
-# 是 web 端抓的，发送会路由到 web 通道导致校验更严。需要切到 PC IM 通道。
+# 抖音 IM (imapi) envelope 常量（PC Electron 抖音 IM 客户端默认值）。
 WEB_SDK_VERSION = "0.1.8"
 WEB_BUILD_NUMBER = "0d50935:feat/pc-im-group"
 WEB_SESSION_AID = "339757"
@@ -380,10 +374,7 @@ def build_text_message_body(
 ) -> bytes:
     """构造发送文本消息的 protobuf 请求体（cmd=100）。
 
-    不再使用模板（模板里的 ts_sign/sdk_cert/request_sign 是抓包瞬间的"证书"，
-    服务端复用后会校验失败 → 静默丢弃消息但仍返回 status_code=0 误导客户端）。
-    改为从零构造 envelope，与 jumpbyte-bot httpsend.go 一致：
-    auth_type=1（普通鉴权）、session_aid=339757、biz=douyin_im_pc。
+    从零构造 envelope（auth_type=1 普通鉴权 + PC IM 通道字段）。
     """
     content_json = json.dumps(
         {"aweType": 700, "type": 0, "richTextInfos": [], "text": text},
@@ -525,10 +516,9 @@ def _build_init_headers() -> list[dict[str, str]]:
 
 
 def _build_im_headers(device_id: str = "0") -> list[dict[str, str]]:
-    """发消息 / 创建会话用的 f15 指纹。
+    """发消息 / 创建会话用的 f15 指纹（PC IM 客户端默认值）。
 
-    与 jumpbyte-bot 一致：session_aid=339757 (PC IM)、UA 用 Electron douyinim、
-    平台 Win32（与 imdesktop UA 对齐）。
+    session_aid=339757、UA 用 Electron douyinim、平台 Win32（与 imdesktop UA 对齐）。
     """
     ua = WEB_PC_UA
     browser_version = ua.replace("Mozilla/", "")
@@ -583,7 +573,7 @@ def build_get_by_user_init_body(
 
 
 def parse_get_by_user_init_response(data: bytes) -> dict[str, Any]:
-    """解析 get_message_by_init 响应（移植 parseGetByUserInitResponse）。
+    """解析 get_message_by_init 响应。
 
     返回 {status, error_code, self_uid, has_more, next_cursor, conversations}；
     会话项 {conversation_id, conversation_short_id, conversation_type, ticket,

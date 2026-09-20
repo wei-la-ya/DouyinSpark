@@ -1,12 +1,7 @@
 """会话列表拉取：imapi get_message_by_init（protobuf，Cookie 鉴权）。
 
-忠实移植自 douyin-id-spark 的 conversation-api.js：
 从主收件箱（好友私信）1v1 会话的参与者中取对方 sec_uid/uid。
-协议为 2026-09 抓包校正（cmd=2043），纯 API，无浏览器。
-
-与 JS 版差异：
-- profileFetchLimit 不再读 Yunzai config，改为 list_conversations 的参数；
-- uid / cursor 等 int64 字段为 Python int（JS 版为字符串，值等价）。
+协议 cmd=2043，纯 API，无浏览器。
 """
 
 from __future__ import annotations

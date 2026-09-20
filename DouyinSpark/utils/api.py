@@ -1,10 +1,8 @@
 """抖音 Web API 核心接口封装（异步 httpx 版）。
 
-忠实移植自 douyin-id-spark 的 douyin-api.js。
 所有接口均为逆向所得，抖音风控升级后可能需要更新签名文件或请求模板。
 
-与 JS 版的命名差异：返回 dict 的键统一为 snake_case；
-int64 字段（uid / conversation_short_id 等）为 Python int。
+返回 dict 的键统一为 snake_case；int64 字段为 Python int。
 """
 
 from __future__ import annotations
@@ -96,9 +94,9 @@ def get_cookie_value(cookies: Sequence[dict[str, Any]], name: str) -> str:
 
 
 def _im_headers(cookie_header: str) -> dict[str, str]:
-    """对齐 jumpbyte-bot httpsend.go postIMAPIRaw：只设 4 个 header。
+    """imapi 发送用 4 个 header（最小集）。
 
-    实测：加 Origin / sec-fetch-* / accept-language 等会触发服务端风控返回 StatusCode_130。
+    加 Origin / sec-fetch-* / accept-language 等会触发服务端风控返回 StatusCode_130。
     """
     from .im_proto import WEB_PC_UA, WEB_REFERER
     return {
@@ -360,7 +358,7 @@ async def create_conversation(
         receiver_uid=receiver_uid, sender_uid=sender_uid, template_b64=template_b64,
         device_id=device_id, self_uid=str(sender_uid or ""),
     )
-    # 参考实现创建会话时不带签名参数
+    # 创建会话接口不签 a_bogus（与 send 不同）
     parsed = await post_im_proto(
         "/v2/conversation/create", cookie_header, body, "创建会话", signed=False, client=client
     )

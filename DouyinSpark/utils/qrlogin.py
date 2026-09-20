@@ -1,8 +1,6 @@
 """抖音扫码登录（纯 API，无浏览器，异步版）。
 
-忠实移植自 douyin-id-spark 的 qr-login.js（其本身移植自 jumpbyte-bot 的
-抖音 PC 客户端登录流程）：走 imdesktop.douyin.com（PC 端 passport），
-签名 sign/qs 规则与 account_sdk_source_info 指纹见下。
+走 imdesktop.douyin.com（PC 端 passport），签名 sign/qs 规则与 account_sdk_source_info 指纹见下。
 
 用法：
     session = QrLoginSession()
@@ -37,9 +35,9 @@ UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "douyinim/1.1.31 Chrome/130.0.6723.58 Electron/33.4.11 Safari/537.36"
 )
-REQUEST_TIMEOUT = 30.0  # 秒（JS REQUEST_TIMEOUT_MS = 30000）
+REQUEST_TIMEOUT = 30.0
 
-# 浏览器发包时的固定参数顺序（取自真机 HAR；顺序乱了对不上风控）
+# passport 接口参数顺序固定（顺序乱了对不上风控）
 PARAM_ORDER = {
     "passport_jssdk_version": 0, "passport_jssdk_type": 1, "is_from_ttaccountsdk": 2,
     "aid": 3, "language": 4, "account_app_language": 5, "ts": 6,
@@ -163,7 +161,7 @@ def encode_kv(map_: dict[str, str]) -> str:
 
 
 class CookieJar:
-    """极简 Cookie Jar（移植自 JS CookieJar）。"""
+    """极简 Cookie Jar。"""
 
     def __init__(self) -> None:
         self.store: dict[str, str] = {}
@@ -384,7 +382,7 @@ class QrLoginSession:
     async def run_loop(self) -> None:
         """轮询扫码状态（调用前需已设置 self.token / self.expire_at）。
 
-        限流策略（移植自 jumpbyte-bot / 抖音Cookie.js）：
+        限流策略：
           - 正常 3s 一次，命中限流后指数退避 3s→6s→12s→15s（封顶）
           - 持续限流 90 秒未缓解则放弃，提示用户挂代理或等待
           - 多种限流描述同时识别（error_code=7 / 太频繁 / 频繁操作 / 操作频繁）
@@ -571,7 +569,7 @@ class QrLoginSession:
         self.message = "短信验证通过，请继续扫码确认"
 
 
-# ===================== 手机号短信验证码登录（备选方案，参考 jumpbyte-bot smslogin.go） =====================
+# ===================== 手机号短信验证码登录（备选方案） =====================
 
 
 def format_mobile(raw: str) -> str:
